@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from grafana_dashboards import main
 from grafana_dashboards._internal.validate import validate_v2
 from grafana_dashboards.dashboards import all_dashboards
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_registry_nonempty() -> None:

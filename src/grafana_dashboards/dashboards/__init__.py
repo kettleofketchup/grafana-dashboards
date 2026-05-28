@@ -16,10 +16,12 @@ Adding a dashboard:
 from __future__ import annotations
 
 import importlib
-from collections.abc import Callable
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
-from grafana_foundation_sdk.builders.dashboardv2beta1 import Dashboard
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from grafana_foundation_sdk.builders.dashboardv2beta1 import Dashboard
 
 
 class DashboardSpec(NamedTuple):

@@ -47,18 +47,22 @@ def validate_v2(dashboard: dict) -> list[str]:
     """
     issues: list[str] = []
 
-    for k in ("apiVersion", "kind", "metadata", "spec"):
-        if k not in dashboard:
-            issues.append(f"envelope: missing {k!r}")
+    issues.extend(
+        f"envelope: missing {k!r}"
+        for k in ("apiVersion", "kind", "metadata", "spec")
+        if k not in dashboard
+    )
     if dashboard.get("apiVersion") != "dashboard.grafana.app/v2beta1":
         issues.append(
-            f"envelope: apiVersion={dashboard.get('apiVersion')!r} (expected v2beta1)"
+            f"envelope: apiVersion={dashboard.get('apiVersion')!r} (expected v2beta1)",
         )
 
     spec = dashboard.get("spec", {})
-    for k in _REQUIRED_SPEC_FIELDS:
-        if k not in spec:
-            issues.append(f"spec: missing required field {k!r}")
+    issues.extend(
+        f"spec: missing required field {k!r}"
+        for k in _REQUIRED_SPEC_FIELDS
+        if k not in spec
+    )
 
     elements = spec.get("elements", {})
     if not isinstance(elements, dict):
@@ -67,10 +71,14 @@ def validate_v2(dashboard: dict) -> list[str]:
 
     referenced: set[str] = set()
     _walk_layout(spec.get("layout", {}), referenced)
-    for n in referenced - set(elements):
-        issues.append(f"layout references element {n!r} but it's not in spec.elements")
-    for n in set(elements) - referenced:
-        issues.append(f"element {n!r} declared but never referenced by layout")
+    issues.extend(
+        f"layout references element {n!r} but it's not in spec.elements"
+        for n in referenced - set(elements)
+    )
+    issues.extend(
+        f"element {n!r} declared but never referenced by layout"
+        for n in set(elements) - referenced
+    )
 
     seen_ids: dict[int, str] = {}
     for name, el in elements.items():
@@ -82,7 +90,7 @@ def validate_v2(dashboard: dict) -> list[str]:
             continue
         if pid in seen_ids:
             issues.append(
-                f"duplicate panel id {pid}: {seen_ids[pid]!r} and {name!r}"
+                f"duplicate panel id {pid}: {seen_ids[pid]!r} and {name!r}",
             )
         else:
             seen_ids[pid] = name
@@ -98,7 +106,7 @@ def validate_v2(dashboard: dict) -> list[str]:
                 continue
             issues.append(
                 f"expr {path}: references ${name} which is not a declared "
-                f"variable or known Grafana built-in"
+                f"variable or known Grafana built-in",
             )
         for opener, closer in (("(", ")"), ("{", "}"), ("[", "]")):
             if expr.count(opener) != expr.count(closer):

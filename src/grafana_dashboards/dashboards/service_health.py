@@ -12,12 +12,10 @@ adjust the panels/queries/variables, and add the import to
 
 from __future__ import annotations
 
-from grafana_foundation_sdk.builders import (
-    common as common_b,
-    dashboardv2beta1 as v2,
-    stat as stat_b,
-    timeseries as timeseries_b,
-)
+from grafana_foundation_sdk.builders import common as common_b
+from grafana_foundation_sdk.builders import dashboardv2beta1 as v2
+from grafana_foundation_sdk.builders import stat as stat_b
+from grafana_foundation_sdk.builders import timeseries as timeseries_b
 from grafana_foundation_sdk.models.common import (
     GraphDrawStyle,
     LegendDisplayMode,
@@ -27,8 +25,8 @@ from grafana_foundation_sdk.models.common import (
 )
 from grafana_foundation_sdk.models.dashboardv2beta1 import (
     DashboardCursorSync,
-    DataQueryKind,
     Dashboardv2beta1DataQueryKindDatasource,
+    DataQueryKind,
     VariableRefresh,
 )
 
@@ -64,7 +62,7 @@ class _PromQuery:
 
 def _query_group(expr: str, legend: str = "", *, instant: bool = False) -> v2.QueryGroup:
     return v2.QueryGroup().target(
-        v2.Target().ref_id("A").query(_PromQuery(expr, legend=legend, instant=instant))
+        v2.Target().ref_id("A").query(_PromQuery(expr, legend=legend, instant=instant)),
     )
 
 
@@ -80,12 +78,12 @@ def _ts_viz() -> timeseries_b.Visualization:
             .show_legend(True)
             .placement(LegendPlacement.RIGHT)
             .display_mode(LegendDisplayMode.TABLE)
-            .calcs(["lastNotNull", "max"])
+            .calcs(["lastNotNull", "max"]),
         )
         .tooltip(
             common_b.VizTooltipOptions()
             .mode(TooltipDisplayMode.MULTI)
-            .sort("desc")
+            .sort("desc"),
         )
     )
 
@@ -94,7 +92,14 @@ def _stat_viz() -> stat_b.Visualization:
     return stat_b.Visualization().unit("short").graph_mode("area")
 
 
-def _panel(pid: int, title: str, viz, query: v2.QueryGroup, *, description: str = "") -> v2.Panel:
+def _panel(
+    pid: int,
+    title: str,
+    viz: timeseries_b.Visualization | stat_b.Visualization,
+    query: v2.QueryGroup,
+    *,
+    description: str = "",
+) -> v2.Panel:
     return (
         v2.Panel()
         .id(pid)
@@ -128,6 +133,7 @@ def _variables() -> list:
 
 @register("service-health")
 def build() -> DashboardSpec:
+    """Build the service-health dashboard."""
     instances = _panel(
         1,
         "Instances up",
@@ -149,14 +155,14 @@ def build() -> DashboardSpec:
         .item(v2.GridItem().name("up-timeline").x(6).y(0).width(18).height(6))
     )
     rows = v2.Rows().row(
-        v2.Row().title("Service health").collapse(False).layout(grid)
+        v2.Row().title("Service health").collapse(False).layout(grid),
     )
 
     builder = (
         v2.Dashboard("Service Health")
         .description(
             "Minimal Prometheus service-health dashboard. Generated from "
-            "kettle-grafana-dashboards as a starter template."
+            "kettle-grafana-dashboards as a starter template.",
         )
         .tags(["kettle-grafana-dashboards", "prometheus", "service-health"])
         .editable(True)
@@ -168,7 +174,7 @@ def build() -> DashboardSpec:
             .from_val("now-1h")
             .to("now")
             .auto_refresh("30s")
-            .timezone("browser")
+            .timezone("browser"),
         )
         .layout(rows)
         .element("instances-up", instances)

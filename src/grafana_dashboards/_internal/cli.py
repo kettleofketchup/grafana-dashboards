@@ -17,7 +17,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from grafana_foundation_sdk.cog.encoder import JSONEncoder
+
 from grafana_dashboards._internal import debug
+from grafana_dashboards._internal.envelope import wrap_v2
+from grafana_dashboards._internal.validate import validate_v2
+from grafana_dashboards.dashboards import all_dashboards
 
 
 class _DebugInfo(argparse.Action):
@@ -68,20 +73,12 @@ def get_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_list() -> int:
-    from grafana_dashboards.dashboards import all_dashboards
-
     for slug in sorted(all_dashboards()):
         print(slug)
     return 0
 
 
 def _cmd_generate(output_dir: Path, only: list[str] | None, *, validate: bool) -> int:
-    from grafana_foundation_sdk.cog.encoder import JSONEncoder
-
-    from grafana_dashboards._internal.envelope import wrap_v2
-    from grafana_dashboards._internal.validate import validate_v2
-    from grafana_dashboards.dashboards import all_dashboards
-
     registry = all_dashboards()
     selected = sorted(only) if only else sorted(registry)
     missing = [s for s in selected if s not in registry]
