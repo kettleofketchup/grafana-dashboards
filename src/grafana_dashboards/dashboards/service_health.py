@@ -16,10 +16,13 @@ from grafana_foundation_sdk.builders import common as common_b
 from grafana_foundation_sdk.builders import dashboardv2beta1 as v2
 from grafana_foundation_sdk.builders import stat as stat_b
 from grafana_foundation_sdk.builders import timeseries as timeseries_b
+from grafana_foundation_sdk.cog.builder import Builder
 from grafana_foundation_sdk.models.common import (
+    BigValueGraphMode,
     GraphDrawStyle,
     LegendDisplayMode,
     LegendPlacement,
+    SortOrder,
     StackingMode,
     TooltipDisplayMode,
 )
@@ -35,7 +38,7 @@ from grafana_dashboards.dashboards import DashboardSpec, register
 PROM_DS_VAR = "$ds_prom"
 
 
-class _PromQuery:
+class _PromQuery(Builder[DataQueryKind]):
     """Wrap a PromQL expression in v2's ``DataQueryKind`` envelope.
 
     The SDK's per-datasource builders emit v1-shaped query bodies; v2
@@ -83,13 +86,13 @@ def _ts_viz() -> timeseries_b.Visualization:
         .tooltip(
             common_b.VizTooltipOptions()
             .mode(TooltipDisplayMode.MULTI)
-            .sort("desc"),
+            .sort(SortOrder.DESCENDING),
         )
     )
 
 
 def _stat_viz() -> stat_b.Visualization:
-    return stat_b.Visualization().unit("short").graph_mode("area")
+    return stat_b.Visualization().unit("short").graph_mode(BigValueGraphMode.AREA)
 
 
 def _panel(
