@@ -4,6 +4,9 @@
 .claude/
 CLAUDE.md
 
+# local-only working docs
+docs/plans/
+
 # python
 *.egg-info/
 *.py[cod]
