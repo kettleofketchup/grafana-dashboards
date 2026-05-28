@@ -46,6 +46,7 @@ _REGISTRY: dict[str, Callable[[], DashboardSpec]] = {}
 # membership is a property of source, not import order.
 _AUTOLOAD = (
     "grafana_dashboards.dashboards.service_health",
+    "grafana_dashboards.dashboards.host_omarchy",
 )
 
 
