@@ -12,6 +12,13 @@ def runner(tmp_path):
     return mod, tmp_path
 
 
+def _undo_helm_escape(text: str) -> str:
+    """Reverse the `{{ "{{" }}` Helm-template escape that render_to_chart
+    applies so the file survives `helm template`. Tests read the raw
+    file (no Helm pipeline) so we undo it before YAML+JSON parsing."""
+    return text.replace('{{ "{{" }}', "{{")
+
+
 def test_emits_dashboard_cr_and_prometheus_rule(runner):
     mod, tmp = runner
     out_dir = tmp / "chart"
@@ -21,7 +28,7 @@ def test_emits_dashboard_cr_and_prometheus_rule(runner):
     assert cr_file.exists()
     assert rule_file.exists()
 
-    cr = yaml.safe_load(cr_file.read_text())
+    cr = yaml.safe_load(_undo_helm_escape(cr_file.read_text()))
     assert cr["apiVersion"] == "grafana.integreatly.org/v1beta1"
     assert cr["kind"] == "Dashboard"
     assert cr["metadata"]["name"] == "kettle-host-omarchy"

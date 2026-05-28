@@ -85,11 +85,17 @@ def render(slugs: list[str], chart_dir: Path, *,
             sys.exit(1)
 
         cr_path = templates / f"{spec.uid}.yaml"
-        cr_path.write_text(yaml.safe_dump(
+        cr_yaml = yaml.safe_dump(
             _dashboard_cr(spec.uid, envelope, folder=folder,
                           instance_label=instance_label),
             sort_keys=False, width=10_000,
-        ))
+        )
+        # Escape Helm Go-template delimiters that appear in Grafana legend
+        # formats like {{cpu}} or {{device}} embedded in the Dashboard JSON.
+        # Helm parses `{{ ... }}` in chart templates as actions; wrap the
+        # opening `{{` as a literal-string action so Helm renders it back.
+        cr_yaml = cr_yaml.replace("{{", '{{ "{{" }}')
+        cr_path.write_text(cr_yaml)
         print(f"wrote {cr_path}")
 
         dash_module = importlib.import_module(
