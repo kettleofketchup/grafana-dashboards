@@ -4,6 +4,7 @@
 - **Owner:** kettle
 - **Status:** Approved (brainstorm); ready for implementation plan
 - **Repos affected:** `~/git_repos/grafana-dashboards`, `~/KettleCluster/home/apps/{grafana-dashboards,kube-prometheus-stack,loki}`
+- **Builds on existing scaffold:** Commits `a306284` (dashboard generator scaffold) and `297078d` (CI/CD fixes) are in place; this design adds the host-monitoring use case on top of them.
 
 ## Goal
 
@@ -13,7 +14,7 @@ Stand up a Grafana dashboard that answers three questions about this Omarchy wor
 2. **Why does it stutter?** — surface kernel pressure (PSI) and correlate spikes with the processes/units active during the spike window.
 3. **Which apps error?** — error-rate-by-unit panel + tailed log view tied to the selected time window.
 
-The dashboard is rendered from typed Python (`grafana-foundation-sdk`, V2/Scenes schema) and provisioned via the existing kube-prometheus-stack sidecar loader, deployed through ArgoCD.
+The dashboard is rendered from typed Python (`grafana-foundation-sdk`, **v2beta1** schema — the GA April 2026 cut of the Scenes-based dashboard model) and provisioned via the existing kube-prometheus-stack sidecar loader, deployed through ArgoCD.
 
 ## Non-goals
 
@@ -58,9 +59,9 @@ The dashboard is rendered from typed Python (`grafana-foundation-sdk`, V2/Scenes
 │  uv-managed Python package + just interface                       │
 │  • src/grafana_dashboards/panels/* (reusable builders)            │
 │  • src/grafana_dashboards/dashboards/host_omarchy.py (composition)│
-│  • cli: `grafana-dashboards render host-omarchy --out PATH`       │
+│  • cli: `kgd generate -o DIR -d host-omarchy`                     │
 │  • just alloy::* (host setup), dash::*, cluster::*                │
-│  • uses grafana-foundation-sdk (dashboard_v2alpha1 module)        │
+│  • grafana-foundation-sdk (dashboardv2beta1) pinned via git+URL   │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -110,9 +111,9 @@ host="kettle-omarchy"   role="workstation"   distro="omarchy"   gpu="nvidia-rtx4
 
 ### 3. Dashboard — "Workstation / kettle-omarchy"
 
-V2 schema (`dashboard_v2alpha1`). Default time `now-1h`, refresh `30s`.
+Registered slug `host-omarchy`; dashboard UID `kettle-host-omarchy`; output file `kettle-host-omarchy.json`. v2beta1 schema (`dashboardv2beta1` SDK module). Default time `now-1h`, refresh `30s`. Lives in a "Workstation" Grafana folder (set via the ConfigMap annotation `grafana_folder: "Workstation"`, mirroring the existing `cluster-overview.yaml` pattern).
 
-**Template variables:** `$DS_PROM`, `$DS_LOKI` (datasource pickers), `$host` (multi-value, default `kettle-omarchy`), `$window` (chip: 1m/5m/15m/1h/6h).
+**Template variables** (declared on the dashboard via `v2.DatasourceVariable` / `v2.QueryVariable`, referenced from panels by name): `$ds_prom`, `$ds_loki` (datasource pickers), `$host` (multi-value query variable, default `kettle-omarchy`), `$window` (custom variable: 1m/5m/15m/1h/6h).
 
 **Rows.**
 
@@ -143,26 +144,29 @@ The page is laid out so that a PSI spike (row 2) sits directly above the cgroup 
 
 ### 4. Dashboard generator repo
 
-`~/git_repos/grafana-dashboards/`:
+`~/git_repos/grafana-dashboards/` — **existing scaffold extended.** Distribution name is `kettle-grafana-dashboards`; Python 3.11+; SDK is pinned via `git+https://github.com/grafana/grafana-foundation-sdk.git@<commit>#subdirectory=python` because v2beta1 builders are on the SDK's `main` branch and PyPI wheels still lag.
 
 ```
-justfile                            # mod alloy / dash / cluster + dev imports
-just/{dev,alloy,dash,cluster}.just
-pyproject.toml                      # adds grafana-foundation-sdk, click, rich
-uv.lock
-alloy/
+justfile                            # NEW — mod alloy / dash / cluster + dev imports
+just/{dev,alloy,dash,cluster}.just  # NEW
+pyproject.toml                      # EXISTS — dependency-groups + grafana-foundation-sdk
+uv.lock                             # EXISTS
+alloy/                              # NEW
   config.alloy.j2                   # Jinja-rendered to /etc/alloy/config.alloy
   env.example
   alloy.service.example
   nvidia_gpu_exporter.service.example
 src/grafana_dashboards/
-  cli.py                            # Click: render <name> [--out PATH]; --all
-  datasources.py                    # DS_PROM = "${DS_PROM}", DS_LOKI = "${DS_LOKI}"
-  labels.py                         # Shared label selectors
-  variables.py                      # Template variable builders
-  rows.py                           # Compose panels into V2 grid layouts
-  panels/
-    _common.py                      # thresholds, units, legend defaults
+  _internal/
+    cli.py                          # EXISTS — argparse `kgd` CLI (list / generate -o -d --no-validate)
+    envelope.py                     # EXISTS — wrap_v2(spec, uid) → CRD-shaped dict
+    validate.py                     # EXISTS — v2beta1 structural validator
+  dashboards/
+    __init__.py                     # EXISTS — DashboardSpec, @register(slug), _AUTOLOAD
+    service_health.py               # EXISTS — starter; mirror its v2 patterns
+    host_omarchy.py                 # NEW — registered as @register("host-omarchy"), uid "kettle-host-omarchy"
+  panels/                           # NEW — reusable v2 builders
+    _common.py                      # thresholds, units, legend defaults, _PromQuery / _LokiQuery shims
     stat.py                         # stat_psi(), stat_loadavg(), stat_temp(), stat_stutter_count()
     timeseries.py                   # ts_psi_all(), ts_cpu_per_core(), ts_cpu_freq(),
                                     # ts_mem_breakdown(), ts_gpu_util(), ts_gpu_mem(),
@@ -170,23 +174,38 @@ src/grafana_dashboards/
     tables.py                       # top_cgroup_cpu_table(), top_cgroup_mem_table(),
                                     # top_error_units_table()
     logs.py                         # logs_panel(), error_rate_timeseries()
-  dashboards/
-    host_omarchy.py                 # exposes DASHBOARD_UID, DASHBOARD_TITLE, build()
+  rows.py                           # NEW — compose panels into v2 Rows/Grid layout helpers
+  variables.py                      # NEW — $ds_prom (DatasourceVariable), $host, $window
   recording_rules/
-    host_omarchy.yaml               # PrometheusRule body emitted alongside the dashboard
+    host_omarchy.yaml               # NEW — PrometheusRule body emitted alongside the dashboard
 tests/
-  test_render.py
-  test_panels.py
+  test_render.py                    # NEW — host-omarchy round-trip + validator-runs-clean
+  test_panels.py                    # NEW — per-builder shape checks
 ```
 
-**Foundation-SDK conventions used:**
-- V2 module: `from grafana_foundation_sdk.builders import dashboard_v2alpha1 as dashboard`.
-- Panel builder returns `(name: str, builder)`; the dashboard module collects them into the `elements` dict and the `layout.items` array (V2 split layout).
-- Datasource refs passed as plain dicts (`{"type": "prometheus", "uid": "${DS_PROM}"}`) per the SDK gotcha.
-- Encoder pinned to `JSONEncoder(sort_keys=True, indent=2)`; JSON file written with trailing newline for stable git diffs.
-- SDK version pinned with the PyPI epoch form (`grafana-foundation-sdk==<EPOCH>!<BASE>`), resolved at implementation time against the cluster's Grafana version.
+**Foundation-SDK / scaffold conventions used (anchored on `service_health.py`):**
+- V2 module names are one word: `from grafana_foundation_sdk.builders import dashboardv2beta1 as v2` and `from grafana_foundation_sdk.models.dashboardv2beta1 import ...`.
+- Each dashboard module exposes `build() -> DashboardSpec` (a `NamedTuple(uid, builder)`) decorated `@register("<slug>")`. The module path must also be added to `dashboards/__init__.py:_AUTOLOAD` so registry membership stays a property of source, not import order.
+- Datasource references go through a `DatasourceVariable` declared on the dashboard (`v2.DatasourceVariable("ds_prom")`, `"ds_loki"`); panels reference it by name via `Dashboardv2beta1DataQueryKindDatasource(name="$ds_prom")`. v2 has no `__inputs` substitution block — the runtime variable replaces it.
+- PromQL/LogQL queries are wrapped in v2's `DataQueryKind(group=..., version="v0", datasource=..., spec={"expr":..., "editorMode":"code", "refId":...})` envelope — the SDK's per-datasource builders still emit v1 query shapes, and v2 rejects them otherwise. Use the `_PromQuery` / `_LokiQuery` shims from `panels/_common.py` (same pattern as `service_health.py`).
+- Layout: `v2.Rows().row(v2.Row().title(...).collapse(...).layout(v2.Grid().item(v2.GridItem().name(N).x(...).y(...).width(...).height(...))...))`. Elements are registered on the dashboard via `.element(name, panel)` and referenced by `name` from grid items.
 
-**Dashboard discovery:** `cli.py` enumerates `dashboards/*.py` modules; each must expose `DASHBOARD_UID`, `DASHBOARD_TITLE`, `build()`. Adding a new dashboard later = drop a file, run `just dash::render-all`.
+**Generator output.** `kgd generate -o DIR` writes one file per registered dashboard, named `<uid>.json`, content shape:
+
+```json
+{
+  "apiVersion": "dashboard.grafana.app/v2beta1",
+  "kind": "Dashboard",
+  "metadata": {"name": "<uid>"},
+  "spec": { "title": "...", "layout": {...}, "elements": {...}, ... }
+}
+```
+
+That's the CRD-envelope shape. For the **ConfigMap sidecar provisioning path** used by your cluster, `just dash::render` strips the envelope down to `.spec` before placing the JSON in the chart (see open item in Risks — this stripping behaviour is the design decision pending sidecar/Grafana-version verification).
+
+**Validation.** Already implemented in `_internal/validate.py` — checks envelope shape, required spec fields, layout↔element name resolution, panel-id uniqueness, balanced parens/braces/brackets in `expr` fields, and that `${var}` references resolve to declared variables or known Grafana built-ins. `kgd generate` runs the validator by default; `--no-validate` skips it.
+
+**Dashboard discovery.** Decorator + explicit `_AUTOLOAD` tuple in `dashboards/__init__.py`. Adding a new dashboard: (1) drop `dashboards/<slug>.py` with a `@register("<slug>")`-decorated `build()`; (2) append the module path to `_AUTOLOAD`; (3) run `just dash::render-all`.
 
 ### 5. `just` interface
 
@@ -221,14 +240,14 @@ default:
 | `alloy::test-ingest` | Push synthetic `kettle_smoketest 1` to the ingest endpoint, then query it back from Grafana to verify the round trip. Exit non-zero on failure. |
 | `alloy::uninstall` | `[confirm]`-gated removal of units, `/etc/alloy/`, and packages. |
 
-**`just/dash.just`:**
+**`just/dash.just`** (thin wrappers around the existing `kgd` CLI):
 
 | Recipe | Action |
 |---|---|
-| `dash::render NAME` | `uv run grafana-dashboards render {{NAME}}` — writes `chart/dashboards/{{NAME}}.json`, ensures `chart/templates/{{NAME}}.yaml` (ConfigMap wrapper) exists, and writes `chart/templates/{{NAME}}-rules.yaml` if the dashboard declares recording rules. Default `--out` is `~/KettleCluster/home/apps/grafana-dashboards/chart/`. |
-| `dash::render-all` | Renders every discovered dashboard. |
-| `dash::validate NAME` | Local validator (paren balance, regex escaping, schema sanity); used by pre-commit. |
-| `dash::diff NAME` | Render to tempfile, diff vs committed JSON. |
+| `dash::render SLUG` | Runs `uv run kgd generate -o $(mktemp -d) -d {{SLUG}}` into a scratch dir, then for each emitted `<uid>.json`: (a) strips the v2 envelope to `.spec` and writes it as `~/KettleCluster/home/apps/grafana-dashboards/chart/dashboards/<uid>.json`; (b) ensures `chart/templates/<uid>.yaml` (ConfigMap wrapper) exists, generating it from a template if missing; (c) if the dashboard module exports `RECORDING_RULES`, writes `chart/templates/<uid>-rules.yaml` as a `PrometheusRule` CRD. Idempotent. |
+| `dash::render-all` | Same as above without the `-d` filter. |
+| `dash::validate SLUG` | Runs `kgd generate -o /tmp/... -d {{SLUG}}` — the structural validator in `_internal/validate.py` runs by default; exit code drives pre-commit. |
+| `dash::diff SLUG` | Renders to a tempfile and diffs against the committed JSON in the cluster repo; no writes. |
 
 **`just/cluster.just`** (one-time enablement):
 
@@ -261,15 +280,16 @@ git -C ~/KettleCluster add ... && git -C ~/KettleCluster commit -m "..."
 
 ## Testing
 
-- **Render round-trip** (`tests/test_render.py`): each dashboard renders to valid JSON; every element key appears exactly once in `layout.items`; every panel has a non-empty title; every PromQL/LogQL `expr` has balanced parens and balanced backticks; datasource refs use `${DS_PROM}`/`${DS_LOKI}` literals (no hard-coded UIDs).
-- **Panel-builder unit tests** (`tests/test_panels.py`): each builder produces the expected datasource type, title shape, and query skeleton. Sanity-only — the SDK's typing carries most of the weight.
-- **Pre-commit hook**: ruff + ty + `pytest -q` + `dash::validate` over every rendered JSON.
+- **Render round-trip** (`tests/test_render.py`): renders `host-omarchy` end-to-end and asserts `_internal/validate.py:validate_v2` returns an empty issues list. The existing validator covers envelope shape, required spec fields, layout↔element name resolution, panel-id uniqueness, expr paren/brace/bracket balance, and variable-reference resolution — so the test is mostly "does the SDK produce something the validator accepts."
+- **Panel-builder unit tests** (`tests/test_panels.py`): each builder produces a panel with the expected datasource variable reference (`$ds_prom` / `$ds_loki`), title, query envelope shape, and visualization type. Sanity-only — the SDK's typing carries most of the weight.
+- **Pre-commit hook**: ruff + ty + `pytest -q` + `dash::validate-all`.
 
 ## Risks and open items
 
+- **Sidecar consumes v2beta1.** The scaffold emits the CRD-shaped envelope (`apiVersion: dashboard.grafana.app/v2beta1`), which natively targets the grafana-operator. Your cluster provisions via the kube-prometheus-stack ConfigMap sidecar, not an operator. The design's chosen path is: **`just dash::render` strips the envelope down to `.spec` before placing the JSON in the chart.** This depends on the Grafana version in `kube-prometheus-stack` being recent enough to parse a v2beta1-shaped `.spec` document directly from a file. Implementation plan must (a) verify the running Grafana version on `grafana.home.kettle.sh`, (b) render one dashboard, drop it in via the sidecar, and confirm it loads. Fallback if it doesn't: install grafana-operator and apply the envelope-wrapped JSON as a CRD instead of via ConfigMap.
 - **Loki service name and port.** The current Loki Helm values are an upstream-defaults stub; the actual Service name (`loki-gateway` vs `loki`) and port depend on whether the chart deploys in SingleBinary or simple-scalable mode. Resolved during implementation by `kubectl -n <ns> get svc`.
 - **SealedSecret vs SOPS.** Chart-side secret pattern verified at implementation time; the spec assumes whichever pattern other apps in the cluster already use.
-- **Foundation-SDK version.** Pinned to the latest `EPOCH!BASE` that matches the cluster's running Grafana (likely 10.x family per PyPI inventory on 2026-05-28). Resolved at implementation time.
+- **Foundation-SDK pin.** Already pinned via `git+URL` at commit `a8c311b58` for v2beta1 builders. Implementation may need to bump if upstream gains useful additions; PyPI wheels remain the longer-term target once they track v2 cleanly.
 - **GPU exporter packaging.** `nvidia_gpu_exporter` is on AUR; if the package is missing or broken, fall back to running the upstream binary release directly under systemd. Implementation plan should include this fallback.
 - **AUR package staleness.** AUR packages can go unmaintained. Implementation plan should record the upstream binary download URLs as a fallback for both Alloy and the GPU exporter.
 
