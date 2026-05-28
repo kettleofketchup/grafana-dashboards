@@ -35,6 +35,8 @@ from grafana_foundation_sdk.models.dashboardv2beta1 import (
 
 from grafana_dashboards.dashboards import DashboardSpec, register
 
+__all__: list[str] = []
+
 PROM_DS_VAR = "$ds_prom"
 
 

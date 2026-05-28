@@ -103,7 +103,7 @@ def _cmd_generate(output_dir: Path, only: list[str] | None, *, validate: bool) -
             total_issues += len(issues)
 
         out_path = output_dir / f"{spec.uid}.json"
-        out_path.write_text(json.dumps(dashboard, indent=2) + "\n")
+        out_path.write_text(json.dumps(dashboard, indent=2) + "\n", encoding="utf-8")
         print(f"wrote {out_path}")
 
     if total_issues:

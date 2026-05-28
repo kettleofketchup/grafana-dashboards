@@ -8,8 +8,9 @@ structural validator. Dashboard authoring uses the registry under
 
 from __future__ import annotations
 
+from grafana_dashboards import dashboards
 from grafana_dashboards._internal.cli import get_parser, main
 from grafana_dashboards._internal.envelope import wrap_v2
 from grafana_dashboards._internal.validate import validate_v2
 
-__all__: list[str] = ["get_parser", "main", "validate_v2", "wrap_v2"]
+__all__: list[str] = ["dashboards", "get_parser", "main", "validate_v2", "wrap_v2"]

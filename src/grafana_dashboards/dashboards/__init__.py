@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 
     from grafana_foundation_sdk.builders.dashboardv2beta1 import Dashboard
 
+__all__: list[str] = ["DashboardSpec", "all_dashboards", "register"]
+
 
 class DashboardSpec(NamedTuple):
     """A dashboard ready to be rendered.
