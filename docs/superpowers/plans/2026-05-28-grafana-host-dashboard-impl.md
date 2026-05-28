@@ -311,13 +311,15 @@ name: grafana-operator
 description: grafana-operator umbrella for KettleCluster
 type: application
 version: 1.0.0
-appVersion: "5.20.0"
+appVersion: "v5.5.2"
 dependencies:
   - name: grafana-operator
-    # OCI tags on ghcr.io are plain SemVer (no leading "v").
-    version: "5.20.0"
-    # Full OCI path includes the chart name; not just the org's helm-charts root.
-    repository: "oci://ghcr.io/grafana/helm-charts/grafana-operator"
+    # Verified live: `helm pull` succeeded against this URL on 2026-05-28.
+    # Chart is published under the grafana-operator org (NOT grafana org).
+    # Tags ARE prefixed with `v` — confirmed via ghcr.io tags API.
+    # Latest stable as of this plan: v5.5.2.
+    version: "v5.5.2"
+    repository: "oci://ghcr.io/grafana-operator/helm-charts"
 ```
 
 `apps/grafana-operator/chart/values.yaml`:
