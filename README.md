@@ -1,7 +1,6 @@
 # kettle-grafana-dashboards
 
 [![ci](https://github.com/kettleofketchup/grafana-dashboards/workflows/ci/badge.svg)](https://github.com/kettleofketchup/grafana-dashboards/actions?query=workflow%3Aci)
-[![pypi version](https://img.shields.io/pypi/v/kettle-grafana-dashboards.svg)](https://pypi.org/project/kettle-grafana-dashboards/)
 
 Reusable Grafana v2 (Scenes) dashboards defined as code with the official
 [grafana-foundation-sdk](https://github.com/grafana/grafana-foundation-sdk).
@@ -14,33 +13,31 @@ dashboards still load but can't be edited in-place.
 
 ## Consuming the dashboards
 
-Three ways to get the JSON, depending on your stack:
-
-| Consumer | How |
-|---|---|
-| Python project | `pip install kettle-grafana-dashboards && kgd generate` |
-| Anything else | Download `*.json` from a [GitHub Release](https://github.com/kettleofketchup/grafana-dashboards/releases) |
-| Kubernetes | Mount the JSON via Grafana's sidecar / ConfigMap pattern |
-
-### Python
-
-```bash
-pip install kettle-grafana-dashboards
-kgd list                              # see registered dashboards
-kgd generate --output ./dashboards    # render all to ./dashboards/*.json
-kgd generate -d service-health -o .   # render one
-```
-
-Upload each `*.json` via the Grafana API or paste into the in-app editor.
-
-### Release artifacts
-
-Every tagged release attaches generated JSON to the GitHub Release page.
-Pin a version, fetch by URL, drop into your provisioning of choice:
+Every tagged release attaches the generated JSON to the GitHub Release
+page. Pin a version, fetch by URL, drop into your provisioning of
+choice:
 
 ```bash
 curl -LO https://github.com/kettleofketchup/grafana-dashboards/releases/download/<TAG>/kettle-service-health.json
 ```
+
+Upload via the Grafana API, paste into the in-app JSON editor, or mount
+as a ConfigMap with Grafana's sidecar provisioner.
+
+> **PyPI release is parked.** The package depends on grafana-foundation-sdk's
+> main branch (v2beta1 builders aren't in a PyPI release yet), and PyPI
+> rejects distributions with direct-URL deps. Once upstream cuts a PyPI
+> release containing v2 builders, we relax the dep and start publishing
+> the wheel. Until then, regenerate locally from a checkout:
+>
+> ```bash
+> git clone https://github.com/kettleofketchup/grafana-dashboards
+> cd grafana-dashboards
+> uv sync
+> uv run kgd list                              # see registered dashboards
+> uv run kgd generate --output ./dashboards    # render all
+> uv run kgd generate -d service-health -o .   # render one
+> ```
 
 ## Authoring a new dashboard
 
@@ -57,10 +54,8 @@ curl -LO https://github.com/kettleofketchup/grafana-dashboards/releases/download
 
 ## Releasing
 
-Tag a commit and push the tag. The `release` workflow:
+Tag a commit with `v*` and push the tag. The `release` workflow:
 
-1. Builds the wheel + sdist.
+1. Runs the test suite.
 2. Runs `kgd generate` to produce the JSON artifacts.
-3. Creates a GitHub Release with the wheel, sdist, and `*.json` attached.
-4. Publishes the wheel to PyPI via [Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
-   (configure once in your PyPI project settings).
+3. Creates a GitHub Release with `*.json` attached and changelog notes.

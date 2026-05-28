@@ -3,11 +3,10 @@ name: release
 on:
   push:
     tags:
-    - "*"
+    - "v*"
 
 permissions:
   contents: write
-  id-token: write  # PyPI trusted publishing
 
 jobs:
   release:
@@ -30,11 +29,24 @@ jobs:
         enable-cache: true
         cache-dependency-glob: pyproject.toml
 
-    - name: Install dependencies
-      run: uv sync --frozen --no-default-groups || uv sync
+    # Install runtime deps + the project only. We need the SDK to render
+    # JSON; we don't need the docs/lint/test toolchain in the release
+    # job. `uv.lock` is gitignored so we don't pass `--frozen`.
+    - name: Install runtime dependencies
+      run: uv sync --no-default-groups
 
-    - name: Build wheel + sdist
-      run: uv build
+    # PyPI rejects distributions whose Requires-Dist contains a direct
+    # URL — and grafana-foundation-sdk's v2beta1 builders only exist on
+    # the SDK's main branch right now, so we have to pin it via git+URL.
+    # Until upstream cuts a PyPI release with v2 builders, we ship the
+    # generated JSON as Release assets only.
+    #
+    # When the SDK ships v2 to PyPI: relax the dep in pyproject.toml,
+    # add `uv build` + a `pypa/gh-action-pypi-publish` step, attach
+    # dist/*.whl + dist/*.tar.gz to the Release files: list, set
+    # permissions.id-token: write at the top of the job.
+    - name: Run tests
+      run: uv run pytest tests/
 
     - name: Generate dashboard JSON
       run: uv run kgd generate --output dashboards-out
@@ -46,17 +58,4 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         body_path: release-notes.md
-        files: |
-          dist/*.whl
-          dist/*.tar.gz
-          dashboards-out/*.json
-
-    - name: Publish to PyPI
-      # Trusted Publishing — configure once at:
-      #   https://pypi.org/manage/account/publishing/
-      # Project=kettle-grafana-dashboards, owner=kettleofketchup,
-      # repo=grafana-dashboards, workflow=release.yml, environment=(blank).
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        packages-dir: dist/
-        skip-existing: true
+        files: dashboards-out/*.json
