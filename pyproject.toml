@@ -32,6 +32,7 @@ dependencies = [
     # the GA April 2026 cut; PyPI wheels (date-epoch versions) lag.
     # Pin a commit until upstream's PyPI release tracks v2 cleanly.
     "grafana-foundation-sdk @ git+https://github.com/grafana/grafana-foundation-sdk.git@a8c311b58#subdirectory=python",
+    "pyyaml>=6.0",
 ]
 
 [project.urls]
