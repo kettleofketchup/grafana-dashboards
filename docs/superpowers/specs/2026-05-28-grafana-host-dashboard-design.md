@@ -93,21 +93,27 @@ cpu, meminfo, loadavg, filesystem, diskstats, netdev, netstat, sockstat,
 time, uname, vmstat, hwmon, cpufreq, pressure, schedstat, interrupts, softirqs
 ```
 
-**External labels** added to every series and log line — using OTEL semantic-convention names so future OTLP-emitting apps on this host correlate cleanly, plus the user-friendly aliases:
+**External labels** added to every series and log line. OTEL Resource semantic-convention *values* — but in their Prometheus-legal **underscore form** (Prometheus label syntax is `[a-zA-Z_][a-zA-Z0-9_]*`; dots are illegal and silently translated to underscores by the standard OTEL→Prometheus mapping). Future OTLP-emitting apps on this host will land on the same labels via the same translation:
 
 ```
-host="kettle-omarchy"            # short alias, used in dashboard filters
-host.name="kettle-omarchy"       # OTEL resource attribute
-host.id="<machine-id>"           # /etc/machine-id; stable across reboots
-host.arch="amd64"
-os.type="linux"
-os.description="Omarchy (Arch rolling)"
+host="kettle-omarchy"                       # short alias, used in dashboard filters
+host_name="kettle-omarchy"                  # OTEL host.name (underscore form)
+host_id="<sha256(/etc/machine-id)[:16]>"    # OTEL host.id — hashed; see Risks
+host_arch="amd64"                           # OTEL host.arch
+os_type="linux"                             # OTEL os.type
+os_description="<PRETTY_NAME from /etc/os-release>"   # baked at configure time
 role="workstation"
 distro="omarchy"
 gpu="nvidia-rtx4090"
 ```
 
-Alloy populates these via `discovery.relabel` reading `/etc/machine-id`, `uname`, and a static block for the rest. The OTEL names are the canonical labels; `host` / `role` / `distro` / `gpu` are additive aliases kept short for query ergonomics.
+**Hand-stamp mechanism (one-time setup).** `alloy/config.alloy.j2` is rendered by `just alloy::configure`, which:
+1. Reads `/etc/machine-id`, hashes it (`sha256(...)[:16]`), and templates that into `host_id`.
+2. Reads `uname -m` for `host_arch`, hardcodes `os_type="linux"`, hardcodes the short aliases.
+3. Sources `/etc/os-release` and templates `${PRETTY_NAME}` into `os_description`.
+4. Writes the rendered `discovery.relabel` block into `/etc/alloy/config.alloy`.
+
+Alloy then stamps every metric and log line with those labels at startup. Truly one-time — only a distro upgrade (changes `PRETTY_NAME`) or OS reinstall (changes machine-id) requires a `just alloy::configure && systemctl reload alloy` to re-stamp.
 
 **Cardinality controls.**
 - Drop uninteresting filesystems (`tmpfs`, `overlay`, container mounts) at relabel time.
@@ -123,7 +129,7 @@ Alloy populates these via `discovery.relabel` reading `/etc/machine-id`, `uname`
 
 ### 2. Cluster-side enablement (one-time, idempotent)
 
-- `kube-prometheus-stack`: enable `prometheus.prometheusSpec.enableRemoteWriteReceiver: true`.
+- `kube-prometheus-stack`: enable `prometheus.prometheusSpec.enableRemoteWriteReceiver: true` and `prometheus.prometheusSpec.enableFeatures: ["exemplar-storage"]` (cheap; reserves the wiring so future OTLP-emitting apps automatically gain trace-ID exemplars on row 2's PSI panel with no schema change).
 - `kube-prometheus-stack`: confirm `grafana.sidecar.dashboards.folderAnnotation: grafana_folder` is set (kube-prometheus-stack default in recent versions, but verify by `helm get values` — the existing `cluster-overview.yaml` template depends on it).
 - New Traefik `IngressRoute` for `prometheus-ingest.home.kettle.sh` → `kube-prometheus-stack-prometheus.monitoring.svc:9090`.
 - New Traefik `IngressRoute` for `loki-ingest.home.kettle.sh` → `loki-gateway.<ns>.svc:80` (or `loki.<ns>.svc:3100` depending on the chart's mode; resolved at implementation time).
@@ -131,8 +137,8 @@ Alloy populates these via `discovery.relabel` reading `/etc/machine-id`, `uname`
     1. `basic-auth` — secret rendered through whatever pattern the chart uses for secrets (SOPS or SealedSecrets — verified during implementation).
     2. `rate-limit` — `RateLimit` middleware capping the route at e.g. `average: 5000` / `burst: 10000` req/s. Defense in depth against a runaway agent or credential leak; bounds ingest blast radius.
 - These routes do **not** carry the `authentik-forwardauth` middleware. They are machine-only endpoints.
-- **External-label enforcement on the Prometheus receiver side.** The basic-auth credential grants writes to *any* series name, including ability to overwrite cluster-side series (`up{job="...."}`, etc.). Add a `writeRelabelConfigs` block on the Prometheus remote-write receiver that enforces `host=~"kettle-.*"` and `role="workstation"` (i.e. drops anything whose external labels don't match the expected workstation tenant). Rendered as part of the `cluster::deploy-ingest` recipe.
-- **Loki datasource — add `derivedFields` for trace correlation.** In the Grafana datasource provisioning (kube-prometheus-stack `grafana.additionalDataSources` or the Loki datasource ConfigMap), add a derived field matching `trace_id=([A-Fa-f0-9]+)` linking to the Tempo datasource. Does nothing today (no traces yet); harmless until later OTLP-logging apps land and auto-link to Tempo from the dashboard's log panel.
+- **External-label enforcement on the Prometheus receiver side.** The basic-auth credential grants writes to *any* series name, including ability to overwrite cluster-side series (`up{job="...."}`, etc.). Add a `writeRelabelConfigs` block on the Prometheus remote-write receiver that enforces `host_name=~"kettle-.*"` AND `role="workstation"` (drops anything whose external labels don't match the expected workstation tenant). Also allowlist `trace_id` as a recognised exemplar label so the reserved exemplar pipeline lights up when OTLP apps appear. Rendered as part of the `cluster::deploy-ingest` recipe.
+- **Loki datasource — add `derivedFields` for trace correlation.** In the Grafana datasource provisioning (kube-prometheus-stack `grafana.additionalDataSources` or the Loki datasource ConfigMap), add a derived field matching `trace_id=(?:00-)?([a-f0-9]{32})\b` linking to the Tempo datasource. Anchors length (W3C trace IDs are exactly 32 lowercase hex chars) and accepts the optional `00-` W3C `traceparent` prefix. Does nothing today (no traces yet); harmless until later OTLP-logging apps land and auto-link to Tempo from the dashboard's log panel.
 
 ### 3. Dashboard — "Workstation / kettle-omarchy"
 
@@ -156,37 +162,43 @@ Registered slug `host-omarchy`; dashboard UID `kettle-host-omarchy`; output file
 
 The page is laid out so that a PSI spike (row 2) sits directly above the cgroup top-talker tables (rows 3–4) and the error rate (row 9) — when you click-drag a spike to zoom, every panel below repaints to that window via `$__from` / `$__to`, exposing "what was burning CPU AND what was erroring during the stutter." Row 7 (IRQ) sits between disk and network so a "NVIDIA IRQ storm during the spike" pattern is one scroll away.
 
-**Recording rules** (delivered as a `PrometheusRule` CRD at `home/apps/grafana-dashboards/chart/templates/host-omarchy-rules.yaml`; naming follows Prometheus `level:metric:operation` convention with no `kettle_` prefix — the `host` external label already disambiguates):
+**Recording rules** (delivered as a `PrometheusRule` CRD at `home/apps/grafana-dashboards/chart/templates/host-omarchy-rules.yaml`; naming follows Prometheus `level:metric:operation` convention with no `kettle_` prefix — the `host_name` external label already disambiguates):
 
 ```promql
-# PSI CPU as a 0–100 percentage (counter → rate → scale).
+# PSI CPU as a 0–1 ratio of time stalled (counter → rate, fraction).
 host:psi_cpu_waiting:ratio1m =
   rate(node_pressure_cpu_waiting_seconds_total[1m])
 
-# Stutter event: a 1m window with PSI CPU > 30% wait time.
+# Stutter event: a 1m sample with PSI CPU > 30% wait. count_over_time
+# with a non-bool comparison only counts truthy samples (the comparison
+# drops non-matching points), giving the actual count of stutter
+# minutes in the 5m window.
 host:psi_cpu_stutter_events:count5m =
   count_over_time(
-    (host:psi_cpu_waiting:ratio1m > bool 0.30)[5m:1m]
+    (host:psi_cpu_waiting:ratio1m > 0.30)[5m:1m]
   )
 
-# Top-10 cgroups by CPU over the last 5 minutes — drives the row-3 table.
-host:cgroup_cpu:topk10_5m =
-  topk(10,
-    sum by (host, name) (
-      rate(container_cpu_usage_seconds_total{name!=""}[5m])
-    )
+# Per-(host_name, name) cgroup CPU aggregate. Topk applied at query time
+# in the panel — topk inside a recording rule is unstable (label sets
+# drift each evaluation, producing series gaps).
+host:cgroup_cpu:sum5m =
+  sum by (host_name, name) (
+    rate(container_cpu_usage_seconds_total{name!=""}[5m])
   )
 
-# Top-10 cgroups by RSS — drives the row-4 table.
-host:cgroup_memory_rss:topk10_5m =
-  topk(10,
-    sum by (host, name) (
-      avg_over_time(container_memory_rss[5m])
-    )
+# Per-(host_name, name) cgroup RSS aggregate. Same topk-at-query-time
+# pattern.
+host:cgroup_memory_rss:sum5m =
+  sum by (host_name, name) (
+    avg_over_time(container_memory_rss[5m])
   )
 ```
 
-The stat panel showing PSI CPU (row 1) reads `host:psi_cpu_waiting:ratio1m{host="$host"} * 100` and uses thresholds at 10/30/60 for green/amber/red. The "stutter events" stat reads `host:psi_cpu_stutter_events:count5m` directly.
+**Panel expressions** referencing these:
+- Row 1 PSI CPU stat: `clamp_max(host:psi_cpu_waiting:ratio1m{host_name="$host"} * 100, 100)` with thresholds at 10/30/60 for green/amber/red. The `clamp_max` is defensive — the `full` PSI series can briefly read above 1.0 due to multi-core accounting + clock skew.
+- Row 1 stutter-events stat: `host:psi_cpu_stutter_events:count5m{host_name="$host"}` (range 0–5).
+- Row 3 top-CPU cgroups table: `topk(10, host:cgroup_cpu:sum5m{host_name="$host"})` — topk evaluated at query time.
+- Row 4 top-RSS cgroups table: `topk(10, host:cgroup_memory_rss:sum5m{host_name="$host"})`.
 
 **Output artifacts per dashboard.** Three files in the cluster repo:
 
@@ -355,6 +367,9 @@ git -C ~/KettleCluster add ... && git -C ~/KettleCluster commit -m "..."
 - **Foundation-SDK pin.** Already pinned via `git+URL` at commit `a8c311b58` for v2beta1 builders. Implementation may need to bump if upstream gains useful additions; PyPI wheels remain the longer-term target once they track v2 cleanly.
 - **GPU exporter packaging.** `nvidia_gpu_exporter` is on AUR; if the package is missing or broken, fall back to running the upstream binary release directly under systemd. Implementation plan should include this fallback.
 - **AUR package staleness.** AUR packages can go unmaintained. Implementation plan should record the upstream binary download URLs as a fallback for both Alloy and the GPU exporter.
+- **cAdvisor as a 2026 standalone agent.** `google/cadvisor` upstream is on life-support since the Kubernetes deprecation. Alloy's `prometheus.exporter.cadvisor` may or may not still ship in the pinned Alloy release. **Implementation plan must (a) verify the component exists in the chosen Alloy version**, and **(b) pre-stage [`cgroup_exporter`](https://github.com/treydock/cgroup_exporter) as the fallback** — it's cgroupv2-native, actively maintained, emits compatible enough metric names with a small relabel block.
+- **`host_id` privacy.** `/etc/machine-id` is a stable cross-service correlator; this design ships `sha256(machine_id)[:16]` rather than the raw value, which is fine for a single-user homelab. If the workstation set ever expands beyond fully-trusted hosts, revisit (consider salting the hash or rotating per-deployment).
+- **Cardinality back-of-envelope** (recorded so the next person doesn't redo the math): per-core `node_cpu_seconds_total` × 32 cores × 8 modes ≈ 256 series; `cpufreq` × 32 ≈ 32; `interrupts` per-CPU × ~40 named IRQs × 32 cores ≈ 1.3 k; `softirqs` × 10 types × 32 ≈ 320; cgroups (after browser collapse) ≈ 100–200; hwmon ≈ 50. **~2-3 k active series per host** — well under any kube-prometheus-stack threshold.
 
 ## Out of scope (will revisit)
 
