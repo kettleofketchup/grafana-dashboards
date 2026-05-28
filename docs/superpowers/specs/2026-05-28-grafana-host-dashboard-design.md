@@ -77,23 +77,43 @@ The dashboard is rendered from typed Python (`grafana-foundation-sdk`, **v2beta1
 
 **Collected signals.**
 
-| Source | Alloy component | Yields |
-|---|---|---|
-| `/proc`, `/sys` | `prometheus.exporter.unix` with PSI + hwmon + filesystem collectors enabled | CPU per-core (P/E labelled via topology), memory, disk, network, temps, **PSI** |
-| systemd cgroups | `prometheus.exporter.unix` (`systemd` collector) and/or `prometheus.exporter.cadvisor` | Per-unit CPU and memory (Hyprland.service, slack.service, chromium-*.scope, …) |
-| NVIDIA GPU | `prometheus.scrape` against `127.0.0.1:9835` | GPU util %, VRAM, temp, power, clock |
-| journald | `loki.source.journal` (priority ≤ info) | All host logs labelled `unit`, `priority`, `boot_id` |
+| Source | Alloy component | Yields | Key metric names |
+|---|---|---|---|
+| `/proc`, `/sys` | `prometheus.exporter.unix` with **pinned collector list** (see below) | CPU per-core (P/E labelled via topology), memory, disk, network, temps, **PSI**, run-queue latency, IRQs/softirqs, per-device IO latency | `node_cpu_seconds_total`, `node_memory_*`, `node_filesystem_*`, `node_disk_*`, `node_network_*`, `node_hwmon_temp_celsius`, `node_cpu_frequency_hertz`, `node_pressure_{cpu,memory,io}_waiting_seconds_total`, `node_pressure_{cpu,memory,io}_stalled_seconds_total`, `node_schedstat_running_seconds_total`, `node_schedstat_waiting_seconds_total`, `node_interrupts_total`, `node_softirqs_total`, `node_disk_io_time_weighted_seconds_total` |
+| systemd cgroups (v2) | `prometheus.exporter.cadvisor` — **committed**; not `systemd` collector, which only emits unit state | Per-unit CPU and memory (Hyprland.service, slack.service, etc.) | `container_cpu_usage_seconds_total`, `container_memory_rss`, `container_memory_working_set_bytes` |
+| NVIDIA GPU | `prometheus.scrape` against `127.0.0.1:9835` | GPU util %, VRAM, temp, power, clock | `nvidia_smi_utilization_gpu_ratio`, `nvidia_smi_memory_used_bytes`, `nvidia_smi_temperature_gpu`, `nvidia_smi_power_draw_watts`, `nvidia_smi_clocks_current_graphics_clock_hz` |
+| journald | `loki.source.journal` (priority ≤ info) | All host logs labelled `unit`, `priority`; `boot_id` as **structured metadata** (Loki ≥3) so reboots don't churn streams |  |
 
-**External labels** added to every series and log line:
+> **cAdvisor on a non-K8s host:** runs under systemd with `--docker_only=false`, `--store_container_labels=false`, and cgroup-v2 access via `--containerd=` left empty + `/sys/fs/cgroup` mounted. Implementation plan must verify the Omarchy host is cgroupv2 (`stat -fc %T /sys/fs/cgroup` → `cgroup2fs`).
+
+**Pinned `prometheus.exporter.unix` collector list** (otherwise the CPU-frequency, temp, schedstat, interrupts, and IO-latency panels silently render empty):
 
 ```
-host="kettle-omarchy"   role="workstation"   distro="omarchy"   gpu="nvidia-rtx4090"
+cpu, meminfo, loadavg, filesystem, diskstats, netdev, netstat, sockstat,
+time, uname, vmstat, hwmon, cpufreq, pressure, schedstat, interrupts, softirqs
 ```
+
+**External labels** added to every series and log line — using OTEL semantic-convention names so future OTLP-emitting apps on this host correlate cleanly, plus the user-friendly aliases:
+
+```
+host="kettle-omarchy"            # short alias, used in dashboard filters
+host.name="kettle-omarchy"       # OTEL resource attribute
+host.id="<machine-id>"           # /etc/machine-id; stable across reboots
+host.arch="amd64"
+os.type="linux"
+os.description="Omarchy (Arch rolling)"
+role="workstation"
+distro="omarchy"
+gpu="nvidia-rtx4090"
+```
+
+Alloy populates these via `discovery.relabel` reading `/etc/machine-id`, `uname`, and a static block for the rest. The OTEL names are the canonical labels; `host` / `role` / `distro` / `gpu` are additive aliases kept short for query ergonomics.
 
 **Cardinality controls.**
 - Drop uninteresting filesystems (`tmpfs`, `overlay`, container mounts) at relabel time.
 - No per-process collector; cgroup granularity only.
-- Journald: debug priority dropped locally before push.
+- **Browser cgroup collapse.** Chromium, Firefox, Electron, and Steam/Proton spawn per-tab/per-process `.scope` units; left alone they explode the `unit` label. A `discovery.relabel` block collapses common patterns: `chromium-\d+\.scope` → `chromium`; `firefox-.+\.scope` → `firefox`; `app-electron-.+\.scope` → `electron`; `app-org\.proton\..+\.scope` → `proton`. Drop `systemd-udevd` worker scopes entirely.
+- Journald: debug priority dropped locally before push. `boot_id` as **structured metadata** (not an index label) so reboots don't churn streams.
 
 **Outbound.**
 - Metrics → `prometheus.remote_write` to `https://prometheus-ingest.home.kettle.sh/api/v1/write`.
@@ -104,10 +124,15 @@ host="kettle-omarchy"   role="workstation"   distro="omarchy"   gpu="nvidia-rtx4
 ### 2. Cluster-side enablement (one-time, idempotent)
 
 - `kube-prometheus-stack`: enable `prometheus.prometheusSpec.enableRemoteWriteReceiver: true`.
+- `kube-prometheus-stack`: confirm `grafana.sidecar.dashboards.folderAnnotation: grafana_folder` is set (kube-prometheus-stack default in recent versions, but verify by `helm get values` — the existing `cluster-overview.yaml` template depends on it).
 - New Traefik `IngressRoute` for `prometheus-ingest.home.kettle.sh` → `kube-prometheus-stack-prometheus.monitoring.svc:9090`.
 - New Traefik `IngressRoute` for `loki-ingest.home.kettle.sh` → `loki-gateway.<ns>.svc:80` (or `loki.<ns>.svc:3100` depending on the chart's mode; resolved at implementation time).
-- New Traefik `Middleware` with basic-auth, secret rendered through whatever pattern that chart already uses for secrets (SOPS or SealedSecrets — verified during implementation).
+- New Traefik `Middleware`s on both ingest routes:
+    1. `basic-auth` — secret rendered through whatever pattern the chart uses for secrets (SOPS or SealedSecrets — verified during implementation).
+    2. `rate-limit` — `RateLimit` middleware capping the route at e.g. `average: 5000` / `burst: 10000` req/s. Defense in depth against a runaway agent or credential leak; bounds ingest blast radius.
 - These routes do **not** carry the `authentik-forwardauth` middleware. They are machine-only endpoints.
+- **External-label enforcement on the Prometheus receiver side.** The basic-auth credential grants writes to *any* series name, including ability to overwrite cluster-side series (`up{job="...."}`, etc.). Add a `writeRelabelConfigs` block on the Prometheus remote-write receiver that enforces `host=~"kettle-.*"` and `role="workstation"` (i.e. drops anything whose external labels don't match the expected workstation tenant). Rendered as part of the `cluster::deploy-ingest` recipe.
+- **Loki datasource — add `derivedFields` for trace correlation.** In the Grafana datasource provisioning (kube-prometheus-stack `grafana.additionalDataSources` or the Loki datasource ConfigMap), add a derived field matching `trace_id=([A-Fa-f0-9]+)` linking to the Tempo datasource. Does nothing today (no traces yet); harmless until later OTLP-logging apps land and auto-link to Tempo from the dashboard's log panel.
 
 ### 3. Dashboard — "Workstation / kettle-omarchy"
 
@@ -119,20 +144,49 @@ Registered slug `host-omarchy`; dashboard UID `kettle-host-omarchy`; output file
 
 | # | Row | Panels |
 |---|---|---|
-| 1 | Right-now indicators | PSI CPU/Mem/IO stats (1m), load avg, max-core temp, stutter-events-in-window count |
-| 2 | Pressure over time | Single timeseries with all three PSI lines (the headline graph) |
-| 3 | CPU detail | Per-core util (repeat-by-core), CPU frequency, top units by CPU over `$window` (table) |
+| 1 | Right-now indicators | PSI CPU/Mem/IO stats (1m %), `load1`, `load5`, `load15` (three separate stats), uptime stat, max-core temp, stutter-events-in-window count |
+| 2 | Pressure over time | Single timeseries with all three PSI lines as percentage — the headline graph |
+| 3 | CPU detail | Per-core util (repeat-by-core, P/E labelled), CPU frequency, scheduler run-queue wait time, top units by CPU over `$window` (table) |
 | 4 | Memory detail | Used/cached/free/swap timeseries, top units by RSS over `$window` (table) |
 | 5 | GPU (RTX 4090) | Util %, VRAM, temp + power, clock |
-| 6 | I/O & disk | IOPS per device, throughput per device, I/O wait |
-| 7 | Network | Bytes/s per interface, errors + drops |
-| 8 | Errors & logs | Error rate by unit (Loki), top error-emitting units, live error tail panel |
+| 6 | I/O & disk | IOPS per device, throughput per device, per-device IO latency p99, I/O wait |
+| 7 | IRQ / kernel | `node_interrupts_total` rate by CPU + name (top-N), `node_softirqs_total` rate by type — NVIDIA driver IRQs are a known stutter cause on this hardware |
+| 8 | Network | Bytes/s per interface, errors + drops |
+| 9 | Errors & logs | Error rate by unit (Loki), top error-emitting units, live error tail panel (with `$ds_loki`'s `derivedFields` auto-linking `trace_id=...` to Tempo when present) |
 
-The page is laid out so that a PSI spike (row 2) sits directly above the cgroup top-talker tables (rows 3–4) and the error rate (row 8) — when you click-drag a spike to zoom, every panel below repaints to that window via `$__from` / `$__to`, exposing "what was burning CPU AND what was erroring during the stutter."
+The page is laid out so that a PSI spike (row 2) sits directly above the cgroup top-talker tables (rows 3–4) and the error rate (row 9) — when you click-drag a spike to zoom, every panel below repaints to that window via `$__from` / `$__to`, exposing "what was burning CPU AND what was erroring during the stutter." Row 7 (IRQ) sits between disk and network so a "NVIDIA IRQ storm during the spike" pattern is one scroll away.
 
-**Recording rules** (delivered as a `PrometheusRule` CRD at `home/apps/grafana-dashboards/chart/templates/host-omarchy-rules.yaml`):
-- `kettle_host:psi_cpu_stutter_events:1m` — count of minutes with PSI CPU > 30, drives the stutter-events stat panel.
-- `kettle_host:cgroup_cpu_top10:5m` — pre-aggregates top-10 cgroups by CPU over 5-minute windows so the table panel does not re-aggregate at query time.
+**Recording rules** (delivered as a `PrometheusRule` CRD at `home/apps/grafana-dashboards/chart/templates/host-omarchy-rules.yaml`; naming follows Prometheus `level:metric:operation` convention with no `kettle_` prefix — the `host` external label already disambiguates):
+
+```promql
+# PSI CPU as a 0–100 percentage (counter → rate → scale).
+host:psi_cpu_waiting:ratio1m =
+  rate(node_pressure_cpu_waiting_seconds_total[1m])
+
+# Stutter event: a 1m window with PSI CPU > 30% wait time.
+host:psi_cpu_stutter_events:count5m =
+  count_over_time(
+    (host:psi_cpu_waiting:ratio1m > bool 0.30)[5m:1m]
+  )
+
+# Top-10 cgroups by CPU over the last 5 minutes — drives the row-3 table.
+host:cgroup_cpu:topk10_5m =
+  topk(10,
+    sum by (host, name) (
+      rate(container_cpu_usage_seconds_total{name!=""}[5m])
+    )
+  )
+
+# Top-10 cgroups by RSS — drives the row-4 table.
+host:cgroup_memory_rss:topk10_5m =
+  topk(10,
+    sum by (host, name) (
+      avg_over_time(container_memory_rss[5m])
+    )
+  )
+```
+
+The stat panel showing PSI CPU (row 1) reads `host:psi_cpu_waiting:ratio1m{host="$host"} * 100` and uses thresholds at 10/30/60 for green/amber/red. The "stutter events" stat reads `host:psi_cpu_stutter_events:count5m` directly.
 
 **Output artifacts per dashboard.** Three files in the cluster repo:
 
@@ -167,17 +221,23 @@ src/grafana_dashboards/
     host_omarchy.py                 # NEW — registered as @register("host-omarchy"), uid "kettle-host-omarchy"
   panels/                           # NEW — reusable v2 builders
     _common.py                      # thresholds, units, legend defaults, _PromQuery / _LokiQuery shims
-    stat.py                         # stat_psi(), stat_loadavg(), stat_temp(), stat_stutter_count()
+    stat.py                         # stat_psi(), stat_load1(), stat_load5(), stat_load15(),
+                                    # stat_uptime(), stat_temp(), stat_stutter_count()
     timeseries.py                   # ts_psi_all(), ts_cpu_per_core(), ts_cpu_freq(),
+                                    # ts_sched_runqueue(), ts_irqs(), ts_softirqs(),
                                     # ts_mem_breakdown(), ts_gpu_util(), ts_gpu_mem(),
-                                    # ts_gpu_temp_power(), ts_disk_*, ts_net_*
+                                    # ts_gpu_temp_power(), ts_disk_iops(),
+                                    # ts_disk_throughput(), ts_disk_io_latency_p99(),
+                                    # ts_net_bytes(), ts_net_errors()
     tables.py                       # top_cgroup_cpu_table(), top_cgroup_mem_table(),
                                     # top_error_units_table()
-    logs.py                         # logs_panel(), error_rate_timeseries()
+    logs.py                         # logs_panel() (with derived-field auto-link),
+                                    # error_rate_timeseries()
   rows.py                           # NEW — compose panels into v2 Rows/Grid layout helpers
   variables.py                      # NEW — $ds_prom (DatasourceVariable), $host, $window
-  recording_rules/
-    host_omarchy.yaml               # NEW — PrometheusRule body emitted alongside the dashboard
+  # Recording rules live as a `RECORDING_RULES` list[dict] exported from the dashboard
+  # module itself (host_omarchy.py) so panels and rules share imports and stay aligned.
+  # `dash::render` reads the constant via attribute lookup and emits the PrometheusRule.
 tests/
   test_render.py                    # NEW — host-omarchy round-trip + validator-runs-clean
   test_panels.py                    # NEW — per-builder shape checks
@@ -186,7 +246,7 @@ tests/
 **Foundation-SDK / scaffold conventions used (anchored on `service_health.py`):**
 - V2 module names are one word: `from grafana_foundation_sdk.builders import dashboardv2beta1 as v2` and `from grafana_foundation_sdk.models.dashboardv2beta1 import ...`.
 - Each dashboard module exposes `build() -> DashboardSpec` (a `NamedTuple(uid, builder)`) decorated `@register("<slug>")`. The module path must also be added to `dashboards/__init__.py:_AUTOLOAD` so registry membership stays a property of source, not import order.
-- Datasource references go through a `DatasourceVariable` declared on the dashboard (`v2.DatasourceVariable("ds_prom")`, `"ds_loki"`); panels reference it by name via `Dashboardv2beta1DataQueryKindDatasource(name="$ds_prom")`. v2 has no `__inputs` substitution block — the runtime variable replaces it.
+- Datasource references go through a `DatasourceVariable` declared on the dashboard (`v2.DatasourceVariable("ds_prom")`, `"ds_loki"`); panels reference it by name via `Dashboardv2beta1DataQueryKindDatasource(name="$ds_prom")`. v2 has no `__inputs` substitution block — the runtime variable replaces it. **Note:** this is the v2beta1 shape — the `name=` field takes the variable expansion. Do **not** confuse this with v1's `{"type": "prometheus", "uid": "${DS_PROM}"}` dict pattern (which is what the `grafana` skill's `dashboard-foundation-sdk.md` documents); v1 dict form does not apply to v2.
 - PromQL/LogQL queries are wrapped in v2's `DataQueryKind(group=..., version="v0", datasource=..., spec={"expr":..., "editorMode":"code", "refId":...})` envelope — the SDK's per-datasource builders still emit v1 query shapes, and v2 rejects them otherwise. Use the `_PromQuery` / `_LokiQuery` shims from `panels/_common.py` (same pattern as `service_health.py`).
 - Layout: `v2.Rows().row(v2.Row().title(...).collapse(...).layout(v2.Grid().item(v2.GridItem().name(N).x(...).y(...).width(...).height(...))...))`. Elements are registered on the dashboard via `.element(name, panel)` and referenced by `name` from grid items.
 
@@ -204,6 +264,8 @@ tests/
 That's the CRD-envelope shape. For the **ConfigMap sidecar provisioning path** used by your cluster, `just dash::render` strips the envelope down to `.spec` before placing the JSON in the chart (see open item in Risks — this stripping behaviour is the design decision pending sidecar/Grafana-version verification).
 
 **Validation.** Already implemented in `_internal/validate.py` — checks envelope shape, required spec fields, layout↔element name resolution, panel-id uniqueness, balanced parens/braces/brackets in `expr` fields, and that `${var}` references resolve to declared variables or known Grafana built-ins. `kgd generate` runs the validator by default; `--no-validate` skips it.
+
+**Validation order matters.** The validator requires envelope fields (`apiVersion`, `kind`, `metadata`); the ConfigMap-shipped artifact has them stripped. Order is therefore: `kgd generate` writes the envelope-wrapped JSON and validates it → `dash::render` strips to `.spec` for placement in the chart. Never run the validator against the stripped artifact.
 
 **Dashboard discovery.** Decorator + explicit `_AUTOLOAD` tuple in `dashboards/__init__.py`. Adding a new dashboard: (1) drop `dashboards/<slug>.py` with a `@register("<slug>")`-decorated `build()`; (2) append the module path to `_AUTOLOAD`; (3) run `just dash::render-all`.
 
@@ -281,6 +343,7 @@ git -C ~/KettleCluster add ... && git -C ~/KettleCluster commit -m "..."
 ## Testing
 
 - **Render round-trip** (`tests/test_render.py`): renders `host-omarchy` end-to-end and asserts `_internal/validate.py:validate_v2` returns an empty issues list. The existing validator covers envelope shape, required spec fields, layout↔element name resolution, panel-id uniqueness, expr paren/brace/bracket balance, and variable-reference resolution — so the test is mostly "does the SDK produce something the validator accepts."
+- **Backslash-over-escape regression** (same file): the `grafana` skill's `dashboard-review.md` calls out a class of bugs where JSON-encoded LogQL regexes end up with `\\\\.` decoding to literal-backslash-then-any-char (misses every dot). Python f-strings make this rare but not impossible; assert `"\\\\\\\\" not in rendered_json` for each rendered dashboard.
 - **Panel-builder unit tests** (`tests/test_panels.py`): each builder produces a panel with the expected datasource variable reference (`$ds_prom` / `$ds_loki`), title, query envelope shape, and visualization type. Sanity-only — the SDK's typing carries most of the weight.
 - **Pre-commit hook**: ruff + ty + `pytest -q` + `dash::validate-all`.
 
