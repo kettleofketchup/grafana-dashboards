@@ -1,0 +1,168 @@
+// Rendered by `just alloy::configure`. Do not edit /etc/alloy/config.alloy by hand.
+
+// ─── 1. node_exporter-equivalent metrics (pinned collector list) ─────────────
+prometheus.exporter.unix "host" {
+  set_collectors = [
+    "cpu", "meminfo", "loadavg", "filesystem", "diskstats",
+    "netdev", "netstat", "sockstat", "time", "uname", "vmstat",
+    "hwmon", "cpufreq", "pressure", "schedstat", "interrupts", "softirqs",
+  ]
+  filesystem {
+    fs_types_exclude    = "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$"
+    mount_points_exclude = "^/(dev|proc|sys|run|var/lib/(docker|containerd|kubelet))($|/)"
+  }
+}
+
+// ─── 2. cgroup metrics (Alloy cadvisor component) ───────────────────────────
+prometheus.exporter.cadvisor "host" {
+  docker_only            = false
+  store_container_labels = false
+}
+
+// ─── 3. NVIDIA GPU exporter (local scrape) ──────────────────────────────────
+prometheus.scrape "nvidia" {
+  targets         = [{ __address__ = "127.0.0.1:9835" }]
+  forward_to      = [prometheus.relabel.host_stamp.receiver]
+  scrape_interval = "30s"
+  job_name        = "nvidia_gpu_exporter"
+}
+
+// ─── 4. Browser/Steam cgroup-scope collapse ─────────────────────────────────
+prometheus.relabel "cgroup_collapse" {
+  forward_to = [prometheus.relabel.host_stamp.receiver]
+  rule {
+    source_labels = ["name"]
+    regex         = "chromium-\\d+\\.scope"
+    target_label  = "name"
+    replacement   = "chromium"
+  }
+  rule {
+    source_labels = ["name"]
+    regex         = "firefox-.+\\.scope"
+    target_label  = "name"
+    replacement   = "firefox"
+  }
+  rule {
+    source_labels = ["name"]
+    regex         = "app-electron-.+\\.scope"
+    target_label  = "name"
+    replacement   = "electron"
+  }
+  rule {
+    source_labels = ["name"]
+    regex         = "app-org\\.proton\\..+\\.scope"
+    target_label  = "name"
+    replacement   = "proton"
+  }
+  rule {
+    source_labels = ["name"]
+    regex         = "app-flatpak-.+\\.scope"
+    target_label  = "name"
+    replacement   = "flatpak"
+  }
+  rule {
+    source_labels = ["name"]
+    regex         = "(systemd-udevd|run-u\\d+).*"
+    action        = "drop"
+  }
+}
+
+// ─── 5. Stamp every series with host labels ─────────────────────────────────
+prometheus.relabel "host_stamp" {
+  forward_to = [prometheus.remote_write.cluster.receiver]
+  rule { target_label = "host"            replacement = "{{ HOSTNAME }}" }
+  rule { target_label = "host_name"       replacement = "{{ HOSTNAME }}" }
+  rule { target_label = "host_id"         replacement = "{{ HOST_ID }}" }
+  rule { target_label = "host_arch"       replacement = "{{ HOST_ARCH }}" }
+  rule { target_label = "os_type"         replacement = "linux" }
+  rule { target_label = "os_description"  replacement = "{{ OS_DESCRIPTION }}" }
+  rule { target_label = "role"            replacement = "workstation" }
+  rule { target_label = "distro"          replacement = "{{ DISTRO }}" }
+  rule { target_label = "gpu"             replacement = "{{ GPU }}" }
+}
+
+// ─── 6. Wire exporters into the relabel chain ───────────────────────────────
+prometheus.scrape "host_unix" {
+  targets         = prometheus.exporter.unix.host.targets
+  forward_to      = [prometheus.relabel.host_stamp.receiver]
+  scrape_interval = "15s"
+  job_name        = "workstation-node"
+}
+
+prometheus.scrape "host_cadvisor" {
+  targets         = prometheus.exporter.cadvisor.host.targets
+  forward_to      = [prometheus.relabel.cgroup_collapse.receiver]
+  scrape_interval = "30s"
+  job_name        = "workstation-cgroups"
+}
+
+// ─── 7. Push metrics to cluster Prometheus ──────────────────────────────────
+prometheus.remote_write "cluster" {
+  endpoint {
+    url = "https://prometheus-ingest.home.kettle.sh/api/v1/write"
+    basic_auth {
+      username = env("PROM_USER")
+      password = env("PROM_PASS")
+    }
+  }
+}
+
+// ─── 8. journald → Loki ─────────────────────────────────────────────────────
+loki.source.journal "host" {
+  forward_to     = [loki.relabel.host_stamp.receiver]
+  format_as_json = false
+  matches = "PRIORITY=0|PRIORITY=1|PRIORITY=2|PRIORITY=3|PRIORITY=4|PRIORITY=5|PRIORITY=6"
+  labels = {
+    role = "workstation",
+  }
+}
+
+loki.relabel "host_stamp" {
+  forward_to = [loki.process.journal_fields.receiver]
+  rule { target_label = "host"           replacement = "{{ HOSTNAME }}" }
+  rule { target_label = "host_name"      replacement = "{{ HOSTNAME }}" }
+  rule { target_label = "host_id"        replacement = "{{ HOST_ID }}" }
+  rule { target_label = "host_arch"      replacement = "{{ HOST_ARCH }}" }
+  rule { target_label = "os_type"        replacement = "linux" }
+  rule { target_label = "distro"         replacement = "{{ DISTRO }}" }
+  // _SYSTEMD_UNIT → journal_field __journal__systemd_unit (double underscore).
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+  // PRIORITY → journal_field __journal_priority (single underscore).
+  rule {
+    source_labels = ["__journal_priority"]
+    target_label  = "priority"
+  }
+  // _BOOT_ID → __journal__boot_id (double underscore); promote so the
+  // structured_metadata stage can read it as a label.
+  rule {
+    source_labels = ["__journal__boot_id"]
+    target_label  = "boot_id"
+  }
+}
+
+loki.process "journal_fields" {
+  forward_to = [loki.write.cluster.receiver]
+  // Promote boot_id to structured metadata (Loki 3+); reboots no
+  // longer churn streams.
+  stage.structured_metadata {
+    values = { boot_id = "" }
+  }
+  // Then drop it as a stream label so only structured-metadata copy remains.
+  stage.labeldrop {
+    values = ["boot_id"]
+  }
+}
+
+// ─── 9. Push logs to cluster Loki ───────────────────────────────────────────
+loki.write "cluster" {
+  endpoint {
+    url = "https://loki-ingest.home.kettle.sh/loki/api/v1/push"
+    basic_auth {
+      username = env("LOKI_USER")
+      password = env("LOKI_PASS")
+    }
+  }
+}
