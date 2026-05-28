@@ -175,12 +175,20 @@ spec:
     secretName: home-kettle-sh-tls
 ```
 
-- [ ] **Step 2: Render-check**
+- [ ] **Step 2: Verify the actual Loki Service name + port (avoids drift surprises)**
+
+Run (substitute the real kube context):
+```bash
+kubectl --context <CTX> -n monitoring get svc loki -o jsonpath='{.spec.ports[?(@.port==3100)].name}' && echo
+```
+Expected: prints a port name (e.g. `http-metrics`). If `loki` is missing or port 3100 is not exposed, the chart deployed differently than expected — discover the right service via `kubectl -n monitoring get svc | grep loki` and substitute in the IngressRoute before rendering.
+
+- [ ] **Step 3: Render-check**
 
 Run: `helm template /home/kettle/KettleCluster/home/apps/kube-prometheus-stack/chart | grep -B 1 -A 18 "name: loki-ingest$"`
 Expected: IngressRoute renders; service target is `loki:3100`.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git -C /home/kettle/KettleCluster add home/apps/kube-prometheus-stack/chart/templates/loki-ingest-ingressroute.yaml
@@ -303,11 +311,13 @@ name: grafana-operator
 description: grafana-operator umbrella for KettleCluster
 type: application
 version: 1.0.0
-appVersion: "v5.20.0"
+appVersion: "5.20.0"
 dependencies:
   - name: grafana-operator
-    version: "v5.20.0"
-    repository: "oci://ghcr.io/grafana/helm-charts"
+    # OCI tags on ghcr.io are plain SemVer (no leading "v").
+    version: "5.20.0"
+    # Full OCI path includes the chart name; not just the org's helm-charts root.
+    repository: "oci://ghcr.io/grafana/helm-charts/grafana-operator"
 ```
 
 `apps/grafana-operator/chart/values.yaml`:
@@ -349,14 +359,11 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - ServerSideApply=true
-      - CreateNamespace=false
-      - ApplyOutOfSyncOnly=true
+  # NOTE: do NOT add a syncPolicy block here. The repo's sync-defaults
+  # Kustomize component (home/argocd-apps/_components/sync-defaults/) patches
+  # every Application with automated.{prune,selfHeal} + ServerSideApply +
+  # RespectIgnoreDifferences=true at apply time. Adding an inline block here
+  # would conflict with the patch.
 ```
 
 - [ ] **Step 4: Add to root argocd-apps kustomization**
@@ -370,7 +377,16 @@ Then add the line `  - grafana-operator.yaml` under the `resources:` list, alpha
 Run: `helm template /home/kettle/KettleCluster/home/apps/grafana-operator/chart | head -20`
 Expected: the operator Deployment + ServiceAccount + ClusterRole(s) render.
 
-- [ ] **Step 6: Register the existing Grafana instance with the operator**
+- [ ] **Step 6: Verify the actual admin-secret name + register Grafana**
+
+The Grafana admin secret name depends on the Helm release. Verify before writing the CR:
+
+```bash
+kubectl --context <CTX> -n monitoring get secret -l app.kubernetes.io/name=grafana \
+  -o jsonpath='{.items[*].metadata.name}'
+```
+
+Note the printed name (likely `grafana-admin` per the existing `grafana-admin-secret.yaml` template). If it's `kube-prometheus-stack-grafana` or different, substitute it for `<ADMIN_SECRET>` below.
 
 `apps/grafana-operator/chart/templates/grafana-instance.yaml`:
 
@@ -382,22 +398,27 @@ kind: Grafana
 metadata:
   name: kube-prometheus-stack-grafana
   labels:
-    # All Dashboard CRs use matching labels in `spec.instanceSelector`
+    # Dashboard CRs use spec.instanceSelector.matchLabels.dashboards
     # to target this instance.
     dashboards: "kube-prometheus-stack"
+  annotations:
+    # CRD is installed by the operator subchart in the same sync.
+    # Wave 1 = apply this CR after the operator's manifests (wave 0).
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   external:
     url: http://kube-prometheus-stack-grafana.monitoring.svc:80
-    # Admin creds from the existing kube-prometheus-stack Secret.
-    adminPassword:
-      name: grafana-admin
-      key: admin-password
+    # Admin creds: secret-key references. (Operator v5 expects this
+    # bare {name, key} shape under external.adminUser/adminPassword.)
     adminUser:
-      name: grafana-admin
+      name: <ADMIN_SECRET>   # value from kubectl verification above
       key: admin-user
+    adminPassword:
+      name: <ADMIN_SECRET>
+      key: admin-password
 ```
 
-> The `external:` block tells the operator to manage an existing Grafana via its HTTP API (using the admin Secret already in the cluster) rather than spinning up a new one.
+> The `external:` block tells the operator to manage an existing Grafana via its HTTP API (using the admin Secret already in the cluster) rather than spinning up a new one. The sync-wave annotation keeps the CR from being applied before the operator's CRDs land.
 
 - [ ] **Step 7: Commit**
 
@@ -411,11 +432,14 @@ git -C /home/kettle/KettleCluster commit -m "grafana-operator: deploy + register
 **Files:**
 - Modify: `/home/kettle/KettleCluster/home/argocd-apps/grafana-dashboards.yaml`
 
-Phase B will push new files into the `grafana-dashboards` chart. The current Application has no `syncPolicy.automated` — without it, B13 would hang waiting for a manual sync.
+> **Update from review:** The repo's sync-defaults Kustomize component already patches every Application with `automated.{prune,selfHeal}` cluster-wide. This task is therefore a verification step, not an edit.
 
-- [ ] **Step 1: Append `syncPolicy.automated` to the spec**
+- [ ] **Step 1: Verify sync-defaults applies to grafana-dashboards**
 
-After the existing `destination:` block, append:
+Run: `grep -E "patches:|sync-defaults" /home/kettle/KettleCluster/home/argocd-apps/kustomization.yaml`
+Expected: the kustomization references the `_components/sync-defaults` component as a patch target covering all Applications.
+
+If for some reason `grafana-dashboards.yaml` is excluded (the patch may target by name list), add an inline `syncPolicy` block:
 
 ```yaml
   syncPolicy:
@@ -424,19 +448,17 @@ After the existing `destination:` block, append:
       selfHeal: true
     syncOptions:
       - ServerSideApply=true
-      - CreateNamespace=false
 ```
 
-- [ ] **Step 2: Verify**
+Otherwise: no edit required.
 
-Run: `yq eval '.spec.syncPolicy' /home/kettle/KettleCluster/home/argocd-apps/grafana-dashboards.yaml`
-Expected: `automated:` block with `prune: true` and `selfHeal: true`.
-
-- [ ] **Step 3: Commit + push the entire Phase-A batch**
+- [ ] **Step 2: Commit + push the entire Phase-A batch**
 
 ```bash
-git -C /home/kettle/KettleCluster add home/argocd-apps/grafana-dashboards.yaml
-git -C /home/kettle/KettleCluster commit -m "grafana-dashboards: enable automated sync"
+git -C /home/kettle/KettleCluster status home/  # review what's staged
+# If Step 1 required an inline syncPolicy edit, commit it:
+git -C /home/kettle/KettleCluster add home/argocd-apps/grafana-dashboards.yaml 2>/dev/null && \
+    git -C /home/kettle/KettleCluster commit -m "grafana-dashboards: enable automated sync (override component)"
 git -C /home/kettle/KettleCluster push origin main
 ```
 
@@ -814,14 +836,13 @@ from grafana_dashboards.panels.stat import (
 
 
 def _expr_of(panel_builder):
+    """Walk the verified path: PanelKind → spec.data → QueryGroupKind →
+    spec.queries[*] → PanelQueryKind → spec.query → DataQueryKind →
+    spec[expr]. Path verified against grafana-foundation-sdk==0.0.12."""
     panel = panel_builder.build()
-    qg = panel.data.build() if hasattr(panel.data, "build") else panel.data
-    targets = getattr(qg, "queries", None) or getattr(qg, "targets", None) or []
-    assert targets, f"no targets extracted from panel; got data={panel.data!r}"
-    ti = targets[0].build() if hasattr(targets[0], "build") else targets[0]
-    q = ti.query
-    qi = q.build() if hasattr(q, "build") else q
-    return qi.spec["expr"]
+    queries = panel.spec.data.spec.queries
+    assert queries, f"no queries on panel: {panel!r}"
+    return queries[0].spec.query.spec["expr"]
 
 
 def test_stat_psi_cpu_uses_recording_rule_with_clamp_and_percent():
@@ -863,33 +884,37 @@ def test_stutter_count_reads_recording_rule():
 Run: `cd /home/kettle/git_repos/grafana-dashboards && uv run pytest tests/test_panels_stat.py -v`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Write the implementation** (uses `ThresholdsConfig` + `Threshold` per the real SDK API)
+- [ ] **Step 3: Write the implementation** (SDK API verified against `grafana-foundation-sdk==0.0.12` installed via `uv sync`)
 
 ```python
 # src/grafana_dashboards/panels/stat.py
 from __future__ import annotations
 
 from grafana_foundation_sdk.builders import (
-    common as common_b,
+    dashboard as dashboard_b,    # ThresholdsConfig BUILDER lives here
     dashboardv2beta1 as v2,
     stat as stat_b,
 )
-from grafana_foundation_sdk.models.common import (
-    BigValueGraphMode,
+from grafana_foundation_sdk.cog.builder import Builder
+# Threshold and ThresholdsMode MODELS live in dashboardv2beta1 (matches
+# the type that stat.Visualization.thresholds expects).
+from grafana_foundation_sdk.models.dashboardv2beta1 import (
     Threshold,
     ThresholdsConfig,
     ThresholdsMode,
 )
+from grafana_foundation_sdk.models.common import BigValueGraphMode
 
 from grafana_dashboards.panels._common import HOST_FILTER, PromQuery, target
 
 
-def _thresholds(*steps: tuple[str, float | None]) -> ThresholdsConfig:
+def _thresholds(*steps: tuple[str, float | None]) -> Builder[ThresholdsConfig]:
+    # Return the BUILDER, not the built model. stat.thresholds() expects
+    # Builder[ThresholdsConfig] per its signature.
     return (
-        common_b.ThresholdsConfig()
+        dashboard_b.ThresholdsConfig()
         .mode(ThresholdsMode.ABSOLUTE)
         .steps([Threshold(color=c, value=v) for c, v in steps])
-        .build()
     )
 
 
@@ -905,22 +930,17 @@ _STUTTER_THRESHOLDS = _thresholds(
 
 
 def _stat(pid: int, title: str, expr: str, *, unit: str = "short",
-          thresholds: ThresholdsConfig | None = None,
-          time_from: str | None = None) -> v2.Panel:
+          thresholds: Builder[ThresholdsConfig] | None = None) -> v2.Panel:
     viz = stat_b.Visualization().unit(unit).graph_mode(BigValueGraphMode.AREA)
     if thresholds is not None:
         viz = viz.thresholds(thresholds)
-    panel = (
+    return (
         v2.Panel()
         .id(pid)
         .title(title)
         .data(target(PromQuery(expr, instant=True)))
         .visualization(viz)
     )
-    if time_from:
-        # v2 feature: per-panel time override.
-        panel = panel.time_from(time_from)
-    return panel
 
 
 def stat_psi_cpu() -> v2.Panel:
@@ -977,12 +997,16 @@ def stat_temp() -> v2.Panel:
 
 
 def stat_stutter_count() -> v2.Panel:
+    # NOTE: v2.Panel in SDK 0.0.12 does not expose a per-panel time
+    # override method (verified: no `.time_from`). The recording rule
+    # itself uses a 5m window, so the value reads "events in the last
+    # 5m relative to the query time" regardless of the dashboard's
+    # selected range — natural decoupling. Per-panel time overrides
+    # would be done via Scenes conditional rendering at the layout
+    # level; out of scope here.
     expr = f"host:psi_cpu_stutter_events:count5m{{{HOST_FILTER}}}"
-    # v2 feature: this stat is meaningful over the past 5m regardless
-    # of the dashboard time range. Per-panel time override.
     return _stat(109, "Stutter events (last 5m)", expr,
-                 thresholds=_STUTTER_THRESHOLDS,
-                 time_from="now-5m")
+                 thresholds=_STUTTER_THRESHOLDS)
 ```
 
 - [ ] **Step 4: Run the test**
@@ -1020,17 +1044,11 @@ from grafana_dashboards.panels.timeseries import (
 
 
 def _exprs(panel_builder):
+    """Same path as B4's _expr_of, but multi-target."""
     panel = panel_builder.build()
-    qg = panel.data.build() if hasattr(panel.data, "build") else panel.data
-    targets = getattr(qg, "queries", None) or getattr(qg, "targets", None) or []
-    assert targets, f"no targets extracted; check QueryGroup attribute name (panel.data={panel.data!r})"
-    out = []
-    for t in targets:
-        ti = t.build() if hasattr(t, "build") else t
-        q = ti.query
-        qi = q.build() if hasattr(q, "build") else q
-        out.append(qi.spec["expr"])
-    return out
+    queries = panel.spec.data.spec.queries
+    assert queries, f"no queries on panel: {panel!r}"
+    return [pq.spec.query.spec["expr"] for pq in queries]
 
 
 @pytest.mark.parametrize("builder, must_contain", [
@@ -1294,12 +1312,9 @@ from grafana_dashboards.panels.tables import (
 
 def _expr(panel_builder):
     panel = panel_builder.build()
-    qg = panel.data.build() if hasattr(panel.data, "build") else panel.data
-    targets = getattr(qg, "queries", None) or getattr(qg, "targets", None) or []
-    assert targets, f"no targets; panel.data={panel.data!r}"
-    ti = targets[0].build() if hasattr(targets[0], "build") else targets[0]
-    q = ti.query
-    return (q.build() if hasattr(q, "build") else q).spec["expr"]
+    queries = panel.spec.data.spec.queries
+    assert queries, f"no queries on panel: {panel!r}"
+    return queries[0].spec.query.spec["expr"]
 
 
 def test_top_cgroup_cpu_uses_query_time_topk():
@@ -1402,15 +1417,9 @@ from grafana_dashboards.panels.logs import logs_panel, error_rate_timeseries
 
 def _exprs(panel_builder):
     panel = panel_builder.build()
-    qg = panel.data.build() if hasattr(panel.data, "build") else panel.data
-    targets = getattr(qg, "queries", None) or getattr(qg, "targets", None) or []
-    assert targets, f"no targets; panel.data={panel.data!r}"
-    return [
-        (t.build() if hasattr(t, "build") else t).query.build().spec["expr"]
-        if hasattr((t.build() if hasattr(t, "build") else t).query, "build")
-        else (t.build() if hasattr(t, "build") else t).query.spec["expr"]
-        for t in targets
-    ]
+    queries = panel.spec.data.spec.queries
+    assert queries, f"no queries on panel: {panel!r}"
+    return [pq.spec.query.spec["expr"] for pq in queries]
 
 
 def test_error_rate_filters_by_priority_and_host():
@@ -1442,7 +1451,8 @@ from grafana_foundation_sdk.builders import (
     dashboardv2beta1 as v2,
     logs as logs_b,
 )
-from grafana_foundation_sdk.models.logs import LogsDedupStrategy
+# LogsDedupStrategy lives in models.common (verified). Not in models.logs.
+from grafana_foundation_sdk.models.common import LogsDedupStrategy
 
 from grafana_dashboards.panels._common import HOST_FILTER, LokiQuery, target
 from grafana_dashboards.panels.timeseries import _ts_viz  # type: ignore[attr-defined]
@@ -1785,6 +1795,8 @@ Replace the body of `build()` (everything from `builder = (` through `return Das
 
 ```python
     # (element_name, builder_callable, width, height)
+    # Row-1 widths sum to exactly 24 so all stat panels fit on one row:
+    # 3+3+3 (PSI) + 2+2+2 (load) + 3+3+3 (uptime/temp/stutter) = 24.
     layout = [
         # Row 1: right-now indicators
         ("psi-cpu",        stat.stat_psi_cpu,         3, 3),
@@ -1795,7 +1807,7 @@ Replace the body of `build()` (everything from `builder = (` through `return Das
         ("load15",         stat.stat_load15,          2, 3),
         ("uptime",         stat.stat_uptime,          3, 3),
         ("temp-max",       stat.stat_temp,            3, 3),
-        ("stutter-count",  stat.stat_stutter_count,   6, 3),
+        ("stutter-count",  stat.stat_stutter_count,   3, 3),
         # Row 2: headline PSI timeseries
         ("psi-all",        ts.ts_psi_all,            24, 8),
         # Row 3: CPU detail
@@ -1953,16 +1965,22 @@ def test_host_omarchy_passes_validator():
 
 def test_host_omarchy_uses_ds_var_in_panel_queries():
     """Panel-level datasource refs use the $ds_prom/$ds_loki variables,
-    never a hard-coded UID. Scans only spec.elements.*."""
+    never a hard-coded UID.
+
+    Verified encoding path (grafana-foundation-sdk==0.0.12):
+      spec.elements.<name>.spec.data.spec.queries[i].spec.query.datasource
+    Note the `.query` level between PanelQuery.spec and DataQueryKind.
+    """
     wrapped, _ = _render("host-omarchy")
     elements = wrapped["spec"]["elements"]
+    checked = 0
     for name, element in elements.items():
-        # Walk panel.data.spec.queries[*].spec.datasource for hardcoded UIDs.
-        for q in (element.get("spec", {})
-                  .get("data", {})
-                  .get("spec", {})
-                  .get("queries", [])):
-            ds = (q.get("spec", {})
+        for pq in (element.get("spec", {})
+                          .get("data", {})
+                          .get("spec", {})
+                          .get("queries", [])):
+            ds = (pq.get("spec", {})
+                    .get("query", {})
                     .get("datasource") or {})
             name_field = ds.get("name", "")
             uid_field = ds.get("uid", "")
@@ -1973,18 +1991,23 @@ def test_host_omarchy_uses_ds_var_in_panel_queries():
             assert not uid_field, (
                 f"element {name!r} query has hardcoded uid={uid_field!r}"
             )
+            checked += 1
+    assert checked > 0, "no panel queries found — path walking is wrong"
 
 
 def test_host_omarchy_no_logql_backslash_overescape():
-    """In JSON source, `\\\\.` decodes to `\\.` in memory → in LogQL
-    regex backticks/quotes that's `\\.` (literal-backslash-then-any-char),
-    NOT `\\.` (literal dot). The bug pattern in JSON source is 4 chars:
-    one literal backslash + the JSON escape representation."""
+    """In JSON source, `\\\\\\\\.` (4 chars) decodes to `\\\\.` in memory
+    (2 chars: literal backslash + dot). In LogQL backtick/regex contexts
+    that's `\\.` regex = literal-backslash-then-any-char, NOT `\\.` = dot.
+
+    We render via json.dumps so we get the in-memory representation;
+    pattern to find is therefore `\\\\.` (2 chars: backslash + dot) — any
+    sequence of 2+ in-memory backslashes immediately followed by a dot
+    is an over-escape."""
     _, rendered = _render("host-omarchy")
-    # Source pattern to find: `\\\\.` (4 chars in source representing
-    # the buggy form). Any match means an over-escape.
-    bug = re.compile(r"\\{4,}\.")
-    assert not bug.search(rendered), "backslash over-escape in LogQL expr"
+    bug = re.compile(r"\\{2,}\.")
+    matches = bug.findall(rendered)
+    assert not matches, f"backslash over-escape in LogQL expr: {matches}"
 
 
 def test_all_registered_dashboards_render_clean():
@@ -2466,33 +2489,47 @@ loki.relabel "host_stamp" {
   rule { target_label = "host"           replacement = "{{ HOSTNAME }}" }
   rule { target_label = "host_name"      replacement = "{{ HOSTNAME }}" }
   rule { target_label = "host_id"        replacement = "{{ HOST_ID }}" }
+  rule { target_label = "host_arch"      replacement = "{{ HOST_ARCH }}" }
   rule { target_label = "os_type"        replacement = "linux" }
   rule { target_label = "distro"         replacement = "{{ DISTRO }}" }
   // Promote __journal__systemd_unit → unit (stream label).
+  // Note: _SYSTEMD_UNIT is a journal *transport* field, prefixed with
+  // a single underscore in journald → arrives as __journal__systemd_unit
+  // (DOUBLE underscore between "journal" and "systemd").
   rule {
     source_labels = ["__journal__systemd_unit"]
     target_label  = "unit"
   }
   // Promote __journal_priority → priority (stream label).
+  // PRIORITY is a journal native field (no leading underscore in journald)
+  // → arrives as __journal_priority (SINGLE underscore). Yes, asymmetric.
   rule {
     source_labels = ["__journal_priority"]
     target_label  = "priority"
+  }
+  // Promote __journal__boot_id → boot_id (will be moved to structured
+  // metadata by the next stage; we promote here so it survives the
+  // relabel boundary).
+  rule {
+    source_labels = ["__journal__boot_id"]
+    target_label  = "boot_id"
   }
 }
 
 loki.process "journal_fields" {
   forward_to = [loki.write.cluster.receiver]
   // boot_id as structured metadata (Loki 3+) so reboots don't churn
-  // streams. The metadata stage reads from existing labels populated
-  // by the relabel chain — but boot_id is sourced from __journal__boot_id
-  // which arrives as a *label* on the entry.
+  // streams. The `values` map's keys are output metadata fields;
+  // values are templated strings referencing existing labels via
+  // Go-template syntax. boot_id is read from the label promoted by
+  // the upstream relabel block.
   stage.structured_metadata {
-    values = { boot_id = "__journal__boot_id" }
+    values = { boot_id = "" }
   }
-  // Drop the __journal__boot_id label so it's not duplicated as a
-  // stream label.
-  stage.label_drop {
-    values = ["__journal__boot_id"]
+  // Drop boot_id as a stream label so only the structured-metadata
+  // form remains.
+  stage.labeldrop {
+    values = ["boot_id"]
   }
 }
 
@@ -2563,18 +2600,17 @@ configure HOSTNAME="kettle-omarchy":
     #!/usr/bin/env bash
     set -euo pipefail
 
-    # cAdvisor preflight: confirm the component exists in the installed
-    # Alloy and cgroupv2 is in use.
-    if ! alloy components 2>/dev/null | grep -q prometheus.exporter.cadvisor; then
-        echo "WARN: prometheus.exporter.cadvisor not found in this Alloy build."
-        echo "Fall back to cgroup_exporter as documented in the design Risks."
-        echo "Aborting; resolve before continuing."
-        exit 1
-    fi
+    # cgroupv2 preflight (cAdvisor requirement).
     if [[ "$(stat -fc %T /sys/fs/cgroup)" != "cgroup2fs" ]]; then
         echo "ERROR: /sys/fs/cgroup is not cgroupv2. cAdvisor needs cgroupv2."
         exit 1
     fi
+    # NOTE: We cannot statically check whether prometheus.exporter.cadvisor
+    # is present in this Alloy build — there is no `alloy components`
+    # subcommand. Validation happens via `alloy run --dry-run` below; if
+    # the component is missing in this Alloy release, the config check
+    # will error with "no component prometheus.exporter.cadvisor" and you
+    # should switch to cgroup_exporter (see design spec Risks).
 
     HOST_ID=$(sha256sum /etc/machine-id | head -c 16)
     HOST_ARCH=$(uname -m)
@@ -2607,8 +2643,11 @@ print(tmpl.render(
         echo "Wrote /etc/alloy/env from template. Replace placeholders with the workstation Secret credentials."
     fi
 
-    # Format-check the rendered config (catches typos).
-    alloy fmt {{ALLOY_ETC}}/config.alloy >/dev/null && echo "config.alloy OK"
+    # Config-validate the rendered config (catches typos AND verifies
+    # every referenced component exists in this Alloy build).
+    # `alloy run --dry-run` parses + type-checks the config without
+    # starting the agent. Exits non-zero on error.
+    sudo -u alloy alloy run --dry-run {{ALLOY_ETC}}/config.alloy && echo "config.alloy OK"
 
 [group('alloy')]
 enable:
@@ -2708,7 +2747,7 @@ Expected: 40 chars (plus newline).
 - [ ] **Step 1: Run configure (includes the cAdvisor + cgroupv2 preflight)**
 
 Run: `cd /home/kettle/git_repos/grafana-dashboards && just alloy::configure kettle-omarchy`
-Expected: preflight passes; `/etc/alloy/config.alloy` rendered; `alloy fmt` OK; `/etc/alloy/env` seeded from example.
+Expected: cgroupv2 preflight passes; `/etc/alloy/config.alloy` rendered; `alloy run --dry-run` reports OK; `/etc/alloy/env` seeded from example.
 
 - [ ] **Step 2: Inspect the rendered labels**
 
@@ -2808,9 +2847,12 @@ Run on the workstation:
 
 ```bash
 sudo pacman -S --needed --noconfirm stress-ng
-stress-ng --cpu 16 --timeout 90s &
+stress-ng --cpu 16 --timeout 180s &
 STRESS_PID=$!
-sleep 60   # let PSI rise + the recording rule evaluate over its 5m window
+sleep 120   # let PSI rise + the recording rule evaluate over its 5m
+            # window. `count_over_time([5m:1m])` needs >=2 evaluations
+            # of `host:psi_cpu_waiting:ratio1m` above the 0.30 threshold
+            # to register a stutter event; 120s gives 2 samples.
 
 kubectl --context <CTX> -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9091:9090 >/dev/null 2>&1 &
 PF_PID=$!
