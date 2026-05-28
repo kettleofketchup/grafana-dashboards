@@ -22,7 +22,7 @@ def test_show_help(capsys: pytest.CaptureFixture) -> None:
     with pytest.raises(SystemExit):
         main(["-h"])
     captured = capsys.readouterr()
-    assert "grafana-dashboards" in captured.out
+    assert "kgd" in captured.out
 
 
 def test_show_version(capsys: pytest.CaptureFixture) -> None:

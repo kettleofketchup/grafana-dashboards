@@ -3,13 +3,13 @@ requires = ["pdm-backend"]
 build-backend = "pdm.backend"
 
 [project]
-name = "grafana-dashboards"
-description = "Grafana Dashboards that are reusable across multiple projects or a good starting point"
+name = "kettle-grafana-dashboards"
+description = "Reusable Grafana v2 (Scenes) dashboards as code. Single-source-of-truth dashboard JSON generated via the official grafana-foundation-sdk."
 authors = [{name = "KettleOfKetchup", email = "kettleofketchup@gmail.com"}]
 license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = []
 dynamic = ["version"]
 classifiers = [
@@ -18,7 +18,6 @@ classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -28,7 +27,12 @@ classifiers = [
     "Topic :: Utilities",
     "Typing :: Typed",
 ]
-dependencies = []
+dependencies = [
+    # Grafana ships v2beta1 builders only on the SDK main branch as of
+    # the GA April 2026 cut; PyPI wheels (date-epoch versions) lag.
+    # Pin a commit until upstream's PyPI release tracks v2 cleanly.
+    "grafana-foundation-sdk @ git+https://github.com/grafana/grafana-foundation-sdk.git@a8c311b58#subdirectory=python",
+]
 
 [project.urls]
 Homepage = "https://kettleofketchup.github.io/grafana-dashboards"
@@ -41,7 +45,8 @@ Gitter = "https://gitter.im/grafana-dashboards/community"
 Funding = "https://github.com/sponsors/kettleofketchup"
 
 [project.scripts]
-grafana-dashboards = "grafana_dashboards.cli:main"
+kgd = "grafana_dashboards._internal.cli:main"
+kettle-grafana-dashboards = "grafana_dashboards._internal.cli:main"
 
 [tool.pdm.version]
 source = "call"
