@@ -11,20 +11,20 @@ def _expr(panel_builder):
 
 
 def test_top_cgroup_cpu_uses_query_time_topk():
-    e = _expr(top_cgroup_cpu_table)
+    e = _expr(top_cgroup_cpu_table())
     assert "topk(10," in e
     assert "host:cgroup_cpu:sum5m" in e
     assert 'host_name="$host"' in e
 
 
 def test_top_cgroup_mem_uses_recording_rule():
-    e = _expr(top_cgroup_mem_table)
+    e = _expr(top_cgroup_mem_table())
     assert "topk(10," in e
     assert "host:cgroup_memory_rss:sum5m" in e
 
 
 def test_top_error_units_loki_query():
-    e = _expr(top_error_units_table)
+    e = _expr(top_error_units_table())
     assert "sum by (unit)" in e
     assert "rate({" in e
     assert 'host_name="$host"' in e
