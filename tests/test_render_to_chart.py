@@ -30,7 +30,8 @@ def test_emits_dashboard_cr_and_prometheus_rule(runner):
 
     cr = yaml.safe_load(_undo_helm_escape(cr_file.read_text()))
     assert cr["apiVersion"] == "grafana.integreatly.org/v1beta1"
-    assert cr["kind"] == "Dashboard"
+    # grafana-operator v5 CRD kind is `GrafanaDashboard` (single word).
+    assert cr["kind"] == "GrafanaDashboard"
     assert cr["metadata"]["name"] == "kettle-host-omarchy"
     body = json.loads(cr["spec"]["json"])
     assert body["apiVersion"] == "dashboard.grafana.app/v2beta1"

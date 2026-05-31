@@ -26,9 +26,12 @@ ENCODER = JSONEncoder(sort_keys=False, indent=2)
 
 def _dashboard_cr(uid: str, envelope: dict, *, folder: str,
                   instance_label: str) -> dict:
+    # grafana-operator v5 CRD kind is `GrafanaDashboard` (single word,
+    # matches `grafanadashboards.grafana.integreatly.org`). Likewise
+    # `GrafanaDatasource`, `GrafanaFolder`, `Grafana`. NOT plain `Dashboard`.
     return {
         "apiVersion": "grafana.integreatly.org/v1beta1",
-        "kind": "Dashboard",
+        "kind": "GrafanaDashboard",
         "metadata": {
             "name": uid,
             "labels": {"app.kubernetes.io/managed-by": "grafana-dashboards"},
