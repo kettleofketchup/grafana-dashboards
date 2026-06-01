@@ -54,7 +54,9 @@ def ts_cpu_per_core() -> v2.Panel:
 
 
 def ts_cpu_freq() -> v2.Panel:
-    expr = f"node_cpu_frequency_hertz{{{HOST_FILTER}}}"
+    # node-exporter exposes current freq as node_cpu_scaling_frequency_hertz
+    # (the cpufreq collector); node_cpu_frequency_hertz does not exist.
+    expr = f"node_cpu_scaling_frequency_hertz{{{HOST_FILTER}}}"
     return _panel(203, "CPU frequency", _ts_viz(unit="hertz"),
                   [(expr, "cpu{{cpu}}")])
 

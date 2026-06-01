@@ -25,8 +25,14 @@ def build_variables() -> list:
     host = (
         v2.QueryVariable("host")
         .label("Host")
-        .query(PromQuery('label_values(node_uname_info, host_name)'))
+        # Scope the source to role="workstation" so this only ever lists
+        # workstation host_names — never the cluster's own node-exporters
+        # (which carry no host_name). Default current to kettle-omarchy so an
+        # empty selection can't collapse panel filters to host_name="" (which
+        # in PromQL matches the unlabeled cluster series instead of the PC).
+        .query(PromQuery('label_values(up{role="workstation"}, host_name)'))
         .refresh(VariableRefresh.ON_DASHBOARD_LOAD)
+        .current(VariableOption(text="kettle-omarchy", value="kettle-omarchy"))
         .multi(False)
         .include_all(False)
     )

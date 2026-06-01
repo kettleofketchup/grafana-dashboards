@@ -19,23 +19,31 @@ from grafana_dashboards.variables import build_variables
 
 
 # Recording rules — order matters: rule N may depend on rule <N.
+# CRITICAL: every rule MUST scope to role="workstation". Without it these
+# recording rules compute over the cluster's own node-exporters too (the 4
+# Talos nodes, which have no host_name label), so panels filtered on
+# host_name="$host" with an empty $host match the cluster series instead of
+# the workstation. role="workstation" is an external label Alloy stamps on all
+# workstation remote_write metrics; the cluster node-exporters never carry it.
+WS = '{role="workstation"}'
 RECORDING_RULES = [
     {
         "record": "host:psi_cpu_waiting:ratio1m",
-        "expr": "rate(node_pressure_cpu_waiting_seconds_total[1m])",
+        "expr": f"rate(node_pressure_cpu_waiting_seconds_total{WS}[1m])",
     },
     {
         "record": "host:psi_memory_waiting:ratio1m",
-        "expr": "rate(node_pressure_memory_waiting_seconds_total[1m])",
+        "expr": f"rate(node_pressure_memory_waiting_seconds_total{WS}[1m])",
     },
     {
         "record": "host:psi_io_waiting:ratio1m",
-        "expr": "rate(node_pressure_io_waiting_seconds_total[1m])",
+        "expr": f"rate(node_pressure_io_waiting_seconds_total{WS}[1m])",
     },
     {
         "record": "host:psi_cpu_stutter_events:count5m",
         # Non-bool comparison filters samples; count_over_time then
-        # counts only the truthy 1m samples in the 5m window.
+        # counts only the truthy 1m samples in the 5m window. Already scoped
+        # via host:psi_cpu_waiting:ratio1m (workstation-only above).
         "expr": (
             "count_over_time("
             "(host:psi_cpu_waiting:ratio1m > 0.30)[5m:1m]"
@@ -46,7 +54,7 @@ RECORDING_RULES = [
         "record": "host:cgroup_cpu:sum5m",
         "expr": (
             "sum by (host_name, name) ("
-            'rate(container_cpu_usage_seconds_total{name!=""}[5m])'
+            'rate(container_cpu_usage_seconds_total{role="workstation",name!=""}[5m])'
             ")"
         ),
     },
@@ -54,7 +62,7 @@ RECORDING_RULES = [
         "record": "host:cgroup_memory_rss:sum5m",
         "expr": (
             "sum by (host_name, name) ("
-            "avg_over_time(container_memory_rss[5m])"
+            'avg_over_time(container_memory_rss{role="workstation"}[5m])'
             ")"
         ),
     },
