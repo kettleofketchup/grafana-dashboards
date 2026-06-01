@@ -26,12 +26,23 @@ ENCODER = JSONEncoder(sort_keys=False, indent=2)
 
 def _dashboard_cr(uid: str, envelope: dict, *, folder: str,
                   instance_label: str) -> dict:
-    # grafana-operator v5 CRD kind is `GrafanaDashboard` (single word,
-    # matches `grafanadashboards.grafana.integreatly.org`). Likewise
-    # `GrafanaDatasource`, `GrafanaFolder`, `Grafana`. NOT plain `Dashboard`.
+    # v2beta1 (Scenes) dashboards MUST ship via GrafanaManifest, not
+    # GrafanaDashboard. GrafanaDashboard only handles legacy v1 JSON — it POSTs
+    # spec.json to Grafana's /api/dashboards/db, which silently drops the v2
+    # schema (spec.elements / spec.layout), leaving an empty dashboard shell.
+    # GrafanaManifest (grafana-operator >= v5.6) applies spec.template to
+    # Grafana's Kubernetes-style dashboard API, preserving the full v2 model.
+    # spec.template IS the v2beta1 envelope verbatim (apiVersion/kind/
+    # metadata.name/spec), so no re-wrapping is needed.
+    #
+    # Folder: GrafanaManifest references folders by UID via a
+    # `grafana.app/folder` annotation, not a title like GrafanaDashboard's
+    # spec.folder. Until a GrafanaFolder CR with a stable UID exists the
+    # dashboard lands in General; `folder` is accepted but currently unused.
+    template = {**envelope, "metadata": {**envelope.get("metadata", {}), "name": uid}}
     return {
         "apiVersion": "grafana.integreatly.org/v1beta1",
-        "kind": "GrafanaDashboard",
+        "kind": "GrafanaManifest",
         "metadata": {
             "name": uid,
             "labels": {"app.kubernetes.io/managed-by": "grafana-dashboards"},
@@ -40,9 +51,8 @@ def _dashboard_cr(uid: str, envelope: dict, *, folder: str,
             "instanceSelector": {
                 "matchLabels": {"dashboards": instance_label},
             },
-            "folder": folder,
             "resyncPeriod": "5m",
-            "json": json.dumps(envelope, indent=2),
+            "template": template,
         },
     }
 
