@@ -22,16 +22,15 @@ def build_variables() -> list:
         .plugin_id("loki")
         .description("Loki datasource for host journald logs.")
     )
+    # Panels scope via role="workstation" (see panels/_common.HOST_FILTER), so
+    # this is now display-only — a constant, not a query. A QueryVariable using
+    # label_values(...) rendered empty under Grafana 12.4's v2 schema (the
+    # label_values template fn isn't interpreted in a raw v2 DataQuery), which
+    # left the dropdown blank; a CustomVariable can't go empty.
     host = (
-        v2.QueryVariable("host")
+        v2.CustomVariable("host")
         .label("Host")
-        # Scope the source to role="workstation" so this only ever lists
-        # workstation host_names — never the cluster's own node-exporters
-        # (which carry no host_name). Default current to kettle-omarchy so an
-        # empty selection can't collapse panel filters to host_name="" (which
-        # in PromQL matches the unlabeled cluster series instead of the PC).
-        .query(PromQuery('label_values(up{role="workstation"}, host_name)'))
-        .refresh(VariableRefresh.ON_DASHBOARD_LOAD)
+        .query("kettle-omarchy")
         .current(VariableOption(text="kettle-omarchy", value="kettle-omarchy"))
         .multi(False)
         .include_all(False)

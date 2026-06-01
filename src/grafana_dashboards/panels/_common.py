@@ -19,10 +19,15 @@ from grafana_foundation_sdk.models.dashboardv2beta1 import (
 PROM_DS_VAR = "$ds_prom"
 LOKI_DS_VAR = "$ds_loki"
 
-# host_name is the OTEL host.name -> Prometheus underscore form; the
-# `host` short alias is also stamped by Alloy but the canonical filter
-# uses host_name so the writeRelabel allowlist semantics align.
-HOST_FILTER = 'host_name="$host"'
+# Scope EVERY panel (Prometheus + Loki) to the workstation via the role label
+# Alloy stamps on all its metrics/logs. We deliberately do NOT use
+# host_name="$host": the cluster's own node-exporters carry no role/host_name,
+# so an empty/unresolved $host collapses the filter to host_name="" which
+# matches the unlabeled CLUSTER series instead of the PC (uptime showed 4 Talos
+# nodes, disk showed Ceph rbd0). role="workstation" can't go empty and works for
+# raw metrics, recording-rule outputs (they inherit role), nvidia, cadvisor, and
+# Loki streams alike. Reintroduce a host variable here only when >1 workstation.
+HOST_FILTER = 'role="workstation"'
 
 
 class PromQuery(Builder[DataQueryKind]):
