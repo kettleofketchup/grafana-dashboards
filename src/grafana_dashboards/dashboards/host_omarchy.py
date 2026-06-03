@@ -92,9 +92,12 @@ def build() -> DashboardSpec:
             ("psi-all",        ts.ts_psi_all,               24, 8),
         ]),
         ("CPU", False, [
-            # Actionable "what's happening" panels stay expanded.
-            ("top-cpu",        tables.top_cgroup_cpu_table, 12, 6),
-            ("sched-runq",     ts.ts_sched_runqueue,        12, 6),
+            # "what's eating CPU" — per-process (process-exporter), over time +
+            # ranked. Replaces the cadvisor cgroup panels (cadvisor ships 0
+            # series on this box). sched run-queue wait sits alongside.
+            ("proc-cpu-ts",    ts.ts_top_process_cpu,         24, 8),
+            ("proc-cpu-tbl",   tables.top_process_cpu_table,  12, 7),
+            ("sched-runq",     ts.ts_sched_runqueue,          12, 7),
         ]),
         ("CPU — cores & frequency", True, [
             # Noisy per-core detail (24 lines) + frequency, collapsed by default.
@@ -102,8 +105,8 @@ def build() -> DashboardSpec:
             ("cpu-freq",       ts.ts_cpu_freq,              12, 8),
         ]),
         ("Memory", True, [
-            ("mem-break",      ts.ts_mem_breakdown,         12, 8),
-            ("top-mem",        tables.top_cgroup_mem_table, 12, 8),
+            ("mem-break",      ts.ts_mem_breakdown,           12, 8),
+            ("proc-mem-tbl",   tables.top_process_mem_table,  12, 8),
         ]),
         ("GPU", False, [
             ("gpu-util",       ts.ts_gpu_util,              12, 6),

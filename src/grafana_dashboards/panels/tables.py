@@ -30,6 +30,27 @@ def top_cgroup_mem_table() -> v2.Panel:
     return _table_panel(602, "Top units by RSS (5m)", PromQuery(expr, instant=True))
 
 
+def top_process_cpu_table() -> v2.Panel:
+    # process-exporter groups by .Comm -> groupname. Sum across user/system
+    # modes. "what's eating CPU" answered per executable (chrome, hyprland, …).
+    expr = (
+        "topk(15, sum by (groupname) ("
+        f'rate(namedprocess_namegroup_cpu_seconds_total{{{HOST_FILTER}}}[5m])'
+        "))"
+    )
+    return _table_panel(603, "Top processes by CPU (cores, 5m)",
+                        PromQuery(expr, instant=True))
+
+
+def top_process_mem_table() -> v2.Panel:
+    expr = (
+        "topk(15, sum by (groupname) ("
+        f'namedprocess_namegroup_memory_bytes{{{HOST_FILTER},memtype="resident"}}'
+        "))"
+    )
+    return _table_panel(604, "Top processes by RSS", PromQuery(expr, instant=True))
+
+
 def top_error_units_table() -> v2.Panel:
     expr = (
         'topk(10, sum by (unit) ('

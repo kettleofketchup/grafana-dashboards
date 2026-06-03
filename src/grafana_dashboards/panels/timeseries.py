@@ -36,6 +36,28 @@ def _panel(pid: int, title: str, viz: ts_b.Visualization,
     return v2.Panel().id(pid).title(title).data(qg).visualization(viz)
 
 
+def ts_top_process_cpu() -> v2.Panel:
+    # Top-8 processes by CPU over time (cores). Stacked so you can see total +
+    # who spiked during a stutter window. groupname == executable name.
+    expr = (
+        "topk(8, sum by (groupname) ("
+        f"rate(namedprocess_namegroup_cpu_seconds_total{{{HOST_FILTER}}}"
+        "[$__rate_interval])))"
+    )
+    return _panel(209, "Top processes by CPU", _ts_viz(unit="none", fill=30,
+                  stack=StackingMode.NORMAL), [(expr, "{{groupname}}")])
+
+
+def ts_top_process_mem() -> v2.Panel:
+    expr = (
+        "topk(8, sum by (groupname) ("
+        f'namedprocess_namegroup_memory_bytes{{{HOST_FILTER},memtype="resident"}}'
+        "))"
+    )
+    return _panel(210, "Top processes by RSS", _ts_viz(unit="bytes", fill=30,
+                  stack=StackingMode.NORMAL), [(expr, "{{groupname}}")])
+
+
 def ts_psi_all() -> v2.Panel:
     return _panel(201, "PSI — CPU / Memory / I/O", _ts_viz(unit="percentunit"),
                   [
