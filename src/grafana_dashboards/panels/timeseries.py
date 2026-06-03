@@ -58,14 +58,16 @@ def ts_top_process_cpu() -> v2.Panel:
 
 
 def ts_top_process_mem() -> v2.Panel:
+    # PSS (proportionalResident) — true per-app memory; RSS double-counts shared
+    # pages across an app's many processes.
     expr = (
         "topk(8, sum by (groupname) ("
-        f'namedprocess_namegroup_memory_bytes{{{HOST_FILTER},memtype="resident"}}'
+        f'namedprocess_namegroup_memory_bytes{{{HOST_FILTER},memtype="proportionalResident"}}'
         "))"
     )
-    return _panel(210, "Top processes by RSS", _ts_viz(unit="bytes", fill=20,
-                  stack=StackingMode.NORMAL, points=True),
-                  [(expr, "{{groupname}}")])
+    return _panel(210, "Top processes by memory (PSS)",
+                  _ts_viz(unit="bytes", fill=20, stack=StackingMode.NORMAL,
+                          points=True), [(expr, "{{groupname}}")])
 
 
 def ts_psi_all() -> v2.Panel:

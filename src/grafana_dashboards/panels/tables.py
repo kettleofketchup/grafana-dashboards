@@ -43,12 +43,16 @@ def top_process_cpu_table() -> v2.Panel:
 
 
 def top_process_mem_table() -> v2.Panel:
+    # PSS (proportionalResident), NOT RSS: RSS sums shared pages once per process
+    # so multi-process apps (chrome = ~99 procs) balloon to nonsense. PSS splits
+    # shared memory across sharers = the real per-app footprint.
     expr = (
         "topk(15, sum by (groupname) ("
-        f'namedprocess_namegroup_memory_bytes{{{HOST_FILTER},memtype="resident"}}'
+        f'namedprocess_namegroup_memory_bytes{{{HOST_FILTER},memtype="proportionalResident"}}'
         "))"
     )
-    return _table_panel(604, "Top processes by RSS", PromQuery(expr, instant=True))
+    return _table_panel(604, "Top processes by memory (PSS)",
+                        PromQuery(expr, instant=True))
 
 
 def top_error_units_table() -> v2.Panel:
