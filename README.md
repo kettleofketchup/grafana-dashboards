@@ -39,6 +39,25 @@ as a ConfigMap with Grafana's sidecar provisioner.
 > uv run kgd generate -d service-health -o .   # render one
 > ```
 
+## Setting up the workstation agent (feeds the host dashboard)
+
+The `host-omarchy` dashboard is fed by a [Grafana Alloy](https://grafana.com/docs/alloy/)
+agent that ships per-host metrics (node, GPU, **per-process** via the built-in
+process-exporter) and journald logs to your Prometheus + Loki. The `alloy` just
+module sets it up on a local Linux box (Arch/Omarchy out of the box; adjust the
+package step for other distros):
+
+```bash
+just alloy::install                  # grafana-alloy + nvidia exporter + systemd-journal group
+just alloy::configure                # render config + restart (re-run after upgrades)
+just alloy::setup <kube-context>     # OR fill /etc/grafana-alloy/env by hand
+just alloy::status                   # verify components healthy
+```
+
+Point it at **your** backends by setting `PROM_URL` / `LOKI_URL` (+ basic-auth
+creds) in `/etc/grafana-alloy/env` — see `workstation/alloy/env.example`. The
+config falls back to the kettle cluster's ingest endpoints if those are unset.
+
 ## Authoring a new dashboard
 
 1. Copy `src/grafana_dashboards/dashboards/service_health.py` to

@@ -1,0 +1,255 @@
+// Rendered by `just alloy::configure`. Do not edit /etc/alloy/config.alloy by hand.
+
+// ─── 1. node_exporter-equivalent metrics (pinned collector list) ─────────────
+prometheus.exporter.unix "host" {
+  set_collectors = [
+    "cpu", "meminfo", "loadavg", "filesystem", "diskstats",
+    "netdev", "netstat", "sockstat", "time", "uname", "vmstat",
+    "hwmon", "cpufreq", "pressure", "schedstat", "interrupts", "softirqs",
+    // "stat" provides node_boot_time_seconds (uptime panel) plus
+    // node_context_switches_total / node_intr_total (useful stutter signals).
+    "stat",
+  ]
+  filesystem {
+    fs_types_exclude    = "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$"
+    mount_points_exclude = "^/(dev|proc|sys|run|var/lib/(docker|containerd|kubelet))($|/)"
+  }
+}
+
+// ─── 2. cgroup metrics (Alloy cadvisor component) ───────────────────────────
+prometheus.exporter.cadvisor "host" {
+  docker_only            = false
+  store_container_labels = false
+}
+
+// ─── 2b. per-process metrics (built-in process-exporter) ────────────────────
+// Answers "what process is eating CPU/RAM". Groups every process by its
+// executable name (.Comm) so we get one series per app (hyprland, chrome,
+// code, ...). track_children rolls child PIDs into the parent group. Exposes
+// namedprocess_namegroup_cpu_seconds_total / _memory_bytes / _num_threads etc.
+prometheus.exporter.process "host" {
+  track_children = true
+  // gather_smaps reads /proc/<pid>/smaps so the proportionalResident (PSS)
+  // memtype is populated. PSS is the TRUTHFUL per-app memory: it splits shared
+  // pages across sharers, so a 99-process app like chrome isn't counted ~99x
+  // (plain RSS sums shared libs/mappings per process and balloons to nonsense).
+  // Cost: parsing smaps for every process each scrape — modest, but if the
+  // grafana-alloy process itself starts using noticeable CPU, drop this back.
+  gather_smaps   = true
+  matcher {
+    name    = "{{ "{{" }}.Comm}}"
+    cmdline = [".+"]
+  }
+}
+
+// ─── 3. NVIDIA GPU exporter (local scrape) ──────────────────────────────────
+prometheus.scrape "nvidia" {
+  targets         = [{ __address__ = "127.0.0.1:9835" }]
+  forward_to      = [prometheus.relabel.host_stamp.receiver]
+  scrape_interval = "30s"
+  job_name        = "nvidia_gpu_exporter"
+}
+
+// ─── 4. Browser/Steam cgroup-scope collapse ─────────────────────────────────
+prometheus.relabel "cgroup_collapse" {
+  forward_to = [prometheus.relabel.host_stamp.receiver]
+  rule {
+    source_labels = ["name"]
+    regex         = "chromium-\\d+\\.scope"
+    target_label  = "name"
+    replacement   = "chromium"
+  }
+  rule {
+    source_labels = ["name"]
+    regex         = "firefox-.+\\.scope"
+    target_label  = "name"
+    replacement   = "firefox"
+  }
+  rule {
+    source_labels = ["name"]
+    regex         = "app-electron-.+\\.scope"
+    target_label  = "name"
+    replacement   = "electron"
+  }
+  rule {
+    source_labels = ["name"]
+    regex         = "app-org\\.proton\\..+\\.scope"
+    target_label  = "name"
+    replacement   = "proton"
+  }
+  rule {
+    source_labels = ["name"]
+    regex         = "app-flatpak-.+\\.scope"
+    target_label  = "name"
+    replacement   = "flatpak"
+  }
+  rule {
+    source_labels = ["name"]
+    regex         = "(systemd-udevd|run-u\\d+).*"
+    action        = "drop"
+  }
+}
+
+// ─── 5. Stamp every series with host labels ─────────────────────────────────
+prometheus.relabel "host_stamp" {
+  forward_to = [prometheus.remote_write.cluster.receiver]
+  rule {
+    target_label = "host"
+    replacement  = "{{ HOSTNAME }}"
+  }
+  rule {
+    target_label = "host_name"
+    replacement  = "{{ HOSTNAME }}"
+  }
+  rule {
+    target_label = "host_id"
+    replacement  = "{{ HOST_ID }}"
+  }
+  rule {
+    target_label = "host_arch"
+    replacement  = "{{ HOST_ARCH }}"
+  }
+  rule {
+    target_label = "os_type"
+    replacement  = "linux"
+  }
+  rule {
+    target_label = "os_description"
+    replacement  = "{{ OS_DESCRIPTION }}"
+  }
+  rule {
+    target_label = "role"
+    replacement  = "workstation"
+  }
+  rule {
+    target_label = "distro"
+    replacement  = "{{ DISTRO }}"
+  }
+  rule {
+    target_label = "gpu"
+    replacement  = "{{ GPU }}"
+  }
+}
+
+// ─── 6. Wire exporters into the relabel chain ───────────────────────────────
+prometheus.scrape "host_unix" {
+  targets         = prometheus.exporter.unix.host.targets
+  forward_to      = [prometheus.relabel.host_stamp.receiver]
+  scrape_interval = "15s"
+  job_name        = "workstation-node"
+}
+
+prometheus.scrape "host_cadvisor" {
+  targets         = prometheus.exporter.cadvisor.host.targets
+  forward_to      = [prometheus.relabel.cgroup_collapse.receiver]
+  scrape_interval = "30s"
+  job_name        = "workstation-cgroups"
+}
+
+prometheus.scrape "host_process" {
+  targets         = prometheus.exporter.process.host.targets
+  forward_to      = [prometheus.relabel.host_stamp.receiver]
+  scrape_interval = "15s"
+  job_name        = "workstation-process"
+}
+
+// ─── 7. Push metrics to cluster Prometheus ──────────────────────────────────
+prometheus.remote_write "cluster" {
+  endpoint {
+    url = coalesce(sys.env("PROM_URL"), "https://prometheus-ingest.home.kettle.sh/api/v1/write")
+    basic_auth {
+      username = sys.env("PROM_USER")
+      password = sys.env("PROM_PASS")
+    }
+  }
+}
+
+// ─── 8. journald → Loki ─────────────────────────────────────────────────────
+loki.source.journal "host" {
+  forward_to     = [loki.process.journal_fields.receiver]
+  format_as_json = false
+  // CRITICAL: journal meta-labels (__journal_*) are ONLY visible to relabel
+  // rules applied INSIDE the source via relabel_rules — a DOWNSTREAM
+  // loki.relabel never sees them (they're stripped on forward). So all rules,
+  // including the journal-field promotions (unit/priority/boot_id), live in
+  // loki.relabel.journal below and are wired in here.
+  relabel_rules  = loki.relabel.journal.rules
+  // NOTE: no `matches` — Alloy journal matches only support logical AND, so a
+  // "PRIORITY=0|PRIORITY=1|..." string is one literal match that ships nothing.
+  // Ship everything; the dashboard filters on the `priority` label.
+  // The grafana-alloy user MUST be in the systemd-journal group to read the
+  // journal (added by `just alloy::install`) or this component is unhealthy.
+  labels = {
+    role = "workstation",
+  }
+}
+
+// Rules-only component: loki.source.journal consumes `.rules` via relabel_rules.
+// forward_to is unused on this path (the source forwards directly to process).
+loki.relabel "journal" {
+  forward_to = []
+  rule {
+    target_label = "host"
+    replacement  = "{{ HOSTNAME }}"
+  }
+  rule {
+    target_label = "host_name"
+    replacement  = "{{ HOSTNAME }}"
+  }
+  rule {
+    target_label = "host_id"
+    replacement  = "{{ HOST_ID }}"
+  }
+  rule {
+    target_label = "host_arch"
+    replacement  = "{{ HOST_ARCH }}"
+  }
+  rule {
+    target_label = "os_type"
+    replacement  = "linux"
+  }
+  rule {
+    target_label = "distro"
+    replacement  = "{{ DISTRO }}"
+  }
+  // _SYSTEMD_UNIT → journal meta-label __journal__systemd_unit (double _).
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+  // PRIORITY → __journal_priority (single _). 0=emerg .. 7=debug.
+  rule {
+    source_labels = ["__journal_priority"]
+    target_label  = "priority"
+  }
+  // _BOOT_ID → __journal__boot_id (double _); promoted so the
+  // structured_metadata stage can read it.
+  rule {
+    source_labels = ["__journal__boot_id"]
+    target_label  = "boot_id"
+  }
+}
+
+loki.process "journal_fields" {
+  forward_to = [loki.write.cluster.receiver]
+  // Promote boot_id to structured metadata (Loki 3+); reboots no
+  // longer churn streams.
+  stage.structured_metadata {
+    values = { boot_id = "" }
+  }
+  // Then drop it as a stream label so only structured-metadata copy remains.
+  stage.label_drop {
+    values = ["boot_id"]
+  }
+}
+
+// ─── 9. Push logs to cluster Loki ───────────────────────────────────────────
+loki.write "cluster" {
+  endpoint {
+    url = coalesce(sys.env("LOKI_URL"), "https://loki-ingest.home.kettle.sh/loki/api/v1/push")
+    basic_auth {
+      username = sys.env("LOKI_USER")
+      password = sys.env("LOKI_PASS")
+    }
+  }
+}
