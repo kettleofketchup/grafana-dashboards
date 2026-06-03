@@ -1,13 +1,35 @@
 from __future__ import annotations
 
 from grafana_foundation_sdk.builders import (
+    bargauge as bargauge_b,
+    common as common_b,
     dashboardv2beta1 as v2,
     table as table_b,
+)
+from grafana_foundation_sdk.models.common import (
+    BarGaugeDisplayMode, BarGaugeValueMode, VizOrientation,
 )
 
 from grafana_dashboards.panels._common import (
     HOST_FILTER, LokiQuery, PromQuery, target,
 )
+
+
+def _bars_panel(pid: int, title: str, query, unit: str) -> v2.Panel:
+    # Horizontal bar gauge: one bar per series (groupname), length ∝ value, so
+    # the worst offenders are obvious at a glance — unlike a table of one
+    # instant-vector row. lastNotNull reduces each series to its current value.
+    viz = (
+        bargauge_b.Visualization()
+        .unit(unit)
+        .orientation(VizOrientation.HORIZONTAL)
+        .display_mode(BarGaugeDisplayMode.GRADIENT)
+        .value_mode(BarGaugeValueMode.TEXT)
+        .reduce_options(
+            common_b.ReduceDataOptions().calcs(["lastNotNull"]).values(False)
+        )
+    )
+    return v2.Panel().id(pid).title(title).data(target(query)).visualization(viz)
 
 
 def _table_panel(pid: int, title: str, query) -> v2.Panel:
@@ -38,8 +60,9 @@ def top_process_cpu_table() -> v2.Panel:
         f'rate(namedprocess_namegroup_cpu_seconds_total{{{HOST_FILTER}}}[5m])'
         "))"
     )
-    return _table_panel(603, "Top processes by CPU (cores, 5m)",
-                        PromQuery(expr, instant=True))
+    return _bars_panel(603, "Top processes by CPU (cores, 5m)",
+                       PromQuery(expr, instant=True, legend="{{groupname}}"),
+                       "none")
 
 
 def top_process_mem_table() -> v2.Panel:
@@ -51,8 +74,9 @@ def top_process_mem_table() -> v2.Panel:
         f'namedprocess_namegroup_memory_bytes{{{HOST_FILTER},memtype="proportionalResident"}}'
         "))"
     )
-    return _table_panel(604, "Top processes by memory (PSS)",
-                        PromQuery(expr, instant=True))
+    return _bars_panel(604, "Top processes by memory (PSS)",
+                       PromQuery(expr, instant=True, legend="{{groupname}}"),
+                       "bytes")
 
 
 def top_error_units_table() -> v2.Panel:
