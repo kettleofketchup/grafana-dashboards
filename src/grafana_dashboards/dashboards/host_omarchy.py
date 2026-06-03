@@ -92,10 +92,14 @@ def build() -> DashboardSpec:
             ("psi-all",        ts.ts_psi_all,               24, 8),
         ]),
         ("CPU", False, [
+            # Actionable "what's happening" panels stay expanded.
+            ("top-cpu",        tables.top_cgroup_cpu_table, 12, 6),
+            ("sched-runq",     ts.ts_sched_runqueue,        12, 6),
+        ]),
+        ("CPU — cores & frequency", True, [
+            # Noisy per-core detail (24 lines) + frequency, collapsed by default.
             ("cpu-per-core",   ts.ts_cpu_per_core,          12, 8),
             ("cpu-freq",       ts.ts_cpu_freq,              12, 8),
-            ("sched-runq",     ts.ts_sched_runqueue,        12, 6),
-            ("top-cpu",        tables.top_cgroup_cpu_table, 12, 6),
         ]),
         ("Memory", True, [
             ("mem-break",      ts.ts_mem_breakdown,         12, 8),

@@ -12,15 +12,19 @@ from grafana_dashboards.panels.timeseries import _ts_viz  # type: ignore[attr-de
 
 
 def error_rate_timeseries() -> v2.Panel:
+    # count_over_time (not rate): error logs are sparse, so a per-second rate
+    # reads as an empty/near-zero line. Counting matched lines per interval
+    # bucket renders each error burst as a clear discrete value. priority<=3 =
+    # err/crit/alert/emerg. "No data" here legitimately means "no errors".
     expr = (
         'sum by (unit) ('
-        f'rate({{{HOST_FILTER},priority=~"0|1|2|3"}}[$__rate_interval])'
+        f'count_over_time({{{HOST_FILTER},priority=~"0|1|2|3"}}[$__interval])'
         ')'
     )
     return (
         v2.Panel()
         .id(702)
-        .title("Error log rate by unit")
+        .title("Error log count by unit")
         .data(target(LokiQuery(expr)))
         .visualization(_ts_viz())
     )
