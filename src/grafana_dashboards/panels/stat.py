@@ -110,6 +110,8 @@ def stat_stutter_count() -> v2.Panel:
     # NOTE: v2.Panel in SDK 0.0.12 does not expose a per-panel time
     # override method. The recording rule itself uses a 5m window, so
     # the value reads "events in the last 5m" naturally.
-    expr = f"host:psi_cpu_stutter_events:count5m{{{HOST_FILTER}}}"
-    return _stat(109, "Stutter events (last 5m)", expr,
+    # `or vector(0)` so an idle box reads 0, not "No data": the recording rule
+    # produces no series when the PSI threshold is never crossed.
+    expr = f"host:psi_cpu_stutter_events:count5m{{{HOST_FILTER}}} or vector(0)"
+    return _stat(109, "CPU stall events (last 5m)", expr,
                  thresholds=_STUTTER_THRESHOLDS)

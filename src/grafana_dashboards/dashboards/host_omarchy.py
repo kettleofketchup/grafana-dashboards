@@ -41,12 +41,16 @@ RECORDING_RULES = [
     },
     {
         "record": "host:psi_cpu_stutter_events:count5m",
-        # Non-bool comparison filters samples; count_over_time then
-        # counts only the truthy 1m samples in the 5m window. Already scoped
-        # via host:psi_cpu_waiting:ratio1m (workstation-only above).
+        # Count 1-min windows (over 5m) where averaged CPU pressure exceeded the
+        # threshold. 0.30 (30%) was absurdly high — a near-total CPU freeze; this
+        # box idles at ~0.2% PSI so it never fired. 0.10 (10%) flags genuine
+        # sustained CPU contention. NOTE: a 1-min-averaged, 15s-scraped PSI can't
+        # see sub-second jank — for that, watch IO/memory PSI or GPU frame timing.
+        # Non-bool comparison filters samples; count_over_time counts the truthy
+        # ones. Scoped via host:psi_cpu_waiting:ratio1m (workstation-only above).
         "expr": (
             "count_over_time("
-            "(host:psi_cpu_waiting:ratio1m > 0.30)[5m:1m]"
+            "(host:psi_cpu_waiting:ratio1m > 0.10)[5m:1m]"
             ")"
         ),
     },
