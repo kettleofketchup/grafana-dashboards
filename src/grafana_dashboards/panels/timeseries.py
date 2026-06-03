@@ -5,7 +5,9 @@ from grafana_foundation_sdk.builders import (
     dashboardv2beta1 as v2,
     timeseries as ts_b,
 )
-from grafana_foundation_sdk.models.common import GraphDrawStyle, StackingMode
+from grafana_foundation_sdk.models.common import (
+    GraphDrawStyle, StackingMode, VisibilityMode,
+)
 
 from grafana_dashboards.panels._common import (
     HOST_FILTER, PromQuery, legend_table_right, tooltip_multi,
@@ -13,8 +15,9 @@ from grafana_dashboards.panels._common import (
 
 
 def _ts_viz(unit: str = "short", fill: int = 10,
-            stack: StackingMode = StackingMode.NONE) -> ts_b.Visualization:
-    return (
+            stack: StackingMode = StackingMode.NONE,
+            points: bool = False) -> ts_b.Visualization:
+    viz = (
         ts_b.Visualization()
         .unit(unit)
         .draw_style(GraphDrawStyle.LINE)
@@ -23,6 +26,11 @@ def _ts_viz(unit: str = "short", fill: int = 10,
         .legend(legend_table_right())
         .tooltip(tooltip_multi())
     )
+    if points:
+        # Render every scrape sample as a dot so short-lived blips are visible
+        # rather than smoothed into the line.
+        viz = viz.show_points(VisibilityMode.ALWAYS).point_size(4)
+    return viz
 
 
 def _panel(pid: int, title: str, viz: ts_b.Visualization,
@@ -44,8 +52,9 @@ def ts_top_process_cpu() -> v2.Panel:
         f"rate(namedprocess_namegroup_cpu_seconds_total{{{HOST_FILTER}}}"
         "[$__rate_interval])))"
     )
-    return _panel(209, "Top processes by CPU", _ts_viz(unit="none", fill=30,
-                  stack=StackingMode.NORMAL), [(expr, "{{groupname}}")])
+    return _panel(209, "Top processes by CPU (cores)",
+                  _ts_viz(unit="none", fill=20, stack=StackingMode.NORMAL,
+                          points=True), [(expr, "{{groupname}}")])
 
 
 def ts_top_process_mem() -> v2.Panel:
@@ -54,8 +63,9 @@ def ts_top_process_mem() -> v2.Panel:
         f'namedprocess_namegroup_memory_bytes{{{HOST_FILTER},memtype="resident"}}'
         "))"
     )
-    return _panel(210, "Top processes by RSS", _ts_viz(unit="bytes", fill=30,
-                  stack=StackingMode.NORMAL), [(expr, "{{groupname}}")])
+    return _panel(210, "Top processes by RSS", _ts_viz(unit="bytes", fill=20,
+                  stack=StackingMode.NORMAL, points=True),
+                  [(expr, "{{groupname}}")])
 
 
 def ts_psi_all() -> v2.Panel:

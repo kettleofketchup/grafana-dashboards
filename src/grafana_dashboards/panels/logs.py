@@ -30,21 +30,39 @@ def error_rate_timeseries() -> v2.Panel:
     )
 
 
-def logs_panel() -> v2.Panel:
-    expr = f'{{{HOST_FILTER},priority=~"0|1|2|3"}}'
-    viz = (
+def _logs_viz() -> logs_b.Visualization:
+    return (
         logs_b.Visualization()
         .show_time(True)
-        .show_labels(False)
+        .show_labels(False)         # keep the row clean; click a line for labels
         .show_common_labels(False)
         .wrap_log_message(True)
         .enable_log_details(True)
         .dedup_strategy(LogsDedupStrategy.NONE)
     )
+
+
+def logs_panel() -> v2.Panel:
+    # All journal logs except debug (priority 7), newest first — a live per-line
+    # feed so the Logs section actually has content (errors alone are too
+    # sparse). unit + priority are one click away per line.
+    expr = f'{{{HOST_FILTER},priority!="7"}}'
     return (
         v2.Panel()
         .id(703)
+        .title("Log tail (all units)")
+        .data(target(LokiQuery(expr)))
+        .visualization(_logs_viz())
+    )
+
+
+def error_logs_panel() -> v2.Panel:
+    # Errors only (priority<=3), per line — the actionable subset.
+    expr = f'{{{HOST_FILTER},priority=~"0|1|2|3"}}'
+    return (
+        v2.Panel()
+        .id(704)
         .title("Error log tail")
         .data(target(LokiQuery(expr)))
-        .visualization(viz)
+        .visualization(_logs_viz())
     )

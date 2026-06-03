@@ -77,6 +77,14 @@ def build() -> DashboardSpec:
     # Headline sections (Overview / CPU / GPU / Logs) start expanded; the rest
     # collapse so the page isn't a wall of graphs.
     SECTIONS = [
+        ("Top consumers — CPU / RAM / GPU (blips)", False, [
+            # Hero row: highest-aggregate consumers over time, sample dots on so
+            # short blips stand out. Per-process for CPU/RAM (process-exporter);
+            # GPU is aggregate util — the nvidia exporter has no per-process GPU.
+            ("proc-cpu-ts",  ts.ts_top_process_cpu,  8, 9),
+            ("proc-mem-ts",  ts.ts_top_process_mem,  8, 9),
+            ("gpu-util",     ts.ts_gpu_util,         8, 9),
+        ]),
         ("Overview", False, [
             # right-now indicators — widths sum to 24:
             # 3+3+3 (PSI) + 2+2+2 (load) + 3+3+3 (uptime/temp/stutter)
@@ -92,12 +100,10 @@ def build() -> DashboardSpec:
             ("psi-all",        ts.ts_psi_all,               24, 8),
         ]),
         ("CPU", False, [
-            # "what's eating CPU" — per-process (process-exporter), over time +
-            # ranked. Replaces the cadvisor cgroup panels (cadvisor ships 0
-            # series on this box). sched run-queue wait sits alongside.
-            ("proc-cpu-ts",    ts.ts_top_process_cpu,         24, 8),
-            ("proc-cpu-tbl",   tables.top_process_cpu_table,  12, 7),
-            ("sched-runq",     ts.ts_sched_runqueue,          12, 7),
+            # Ranked per-process CPU (table) + scheduler run-queue wait. The
+            # over-time process chart lives in the hero row at the top.
+            ("proc-cpu-tbl",   tables.top_process_cpu_table,  12, 8),
+            ("sched-runq",     ts.ts_sched_runqueue,          12, 8),
         ]),
         ("CPU — cores & frequency", True, [
             # Noisy per-core detail (24 lines) + frequency, collapsed by default.
@@ -109,7 +115,7 @@ def build() -> DashboardSpec:
             ("proc-mem-tbl",   tables.top_process_mem_table,  12, 8),
         ]),
         ("GPU", False, [
-            ("gpu-util",       ts.ts_gpu_util,              12, 6),
+            # GPU util over time is in the hero row; detail panels here.
             ("gpu-mem",        ts.ts_gpu_mem,               12, 6),
             ("gpu-temp-power", ts.ts_gpu_temp_power,        12, 6),
             ("gpu-clock",      ts.ts_gpu_clock,             12, 6),
@@ -131,7 +137,9 @@ def build() -> DashboardSpec:
         ("Logs & Errors", False, [
             ("err-rate",       logs_p.error_rate_timeseries, 12, 8),
             ("err-units",      tables.top_error_units_table, 12, 8),
-            ("err-tail",       logs_p.logs_panel,            24, 10),
+            # Rich per-line feed of all logs (sans debug) + errors-only tail.
+            ("log-tail",       logs_p.logs_panel,            24, 12),
+            ("err-tail",       logs_p.error_logs_panel,      24, 8),
         ]),
     ]
 
