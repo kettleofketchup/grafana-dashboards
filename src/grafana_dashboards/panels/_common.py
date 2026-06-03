@@ -91,6 +91,10 @@ def legend_table_right() -> common_b.VizLegendOptions:
         .placement(LegendPlacement.RIGHT)
         .display_mode(LegendDisplayMode.TABLE)
         .calcs(["lastNotNull", "max"])
+        # Biggest consumers first; series that flap out of a topk() sink to the
+        # bottom instead of showing a confusing 0 near the top.
+        .sort_by("Last *")
+        .sort_desc(True)
     )
 
 

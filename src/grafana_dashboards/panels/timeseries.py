@@ -48,7 +48,7 @@ def ts_top_process_cpu() -> v2.Panel:
     # Top-8 processes by CPU over time (cores). Stacked so you can see total +
     # who spiked during a stutter window. groupname == executable name.
     expr = (
-        "topk(8, sum by (groupname) ("
+        "topk(12, sum by (groupname) ("
         f"rate(namedprocess_namegroup_cpu_seconds_total{{{HOST_FILTER}}}"
         "[$__rate_interval])))"
     )
@@ -61,7 +61,7 @@ def ts_top_process_mem() -> v2.Panel:
     # PSS (proportionalResident) — true per-app memory; RSS double-counts shared
     # pages across an app's many processes.
     expr = (
-        "topk(8, sum by (groupname) ("
+        "topk(12, sum by (groupname) ("
         f'namedprocess_namegroup_memory_bytes{{{HOST_FILTER},memtype="proportionalResident"}}'
         "))"
     )
